@@ -1,0 +1,58 @@
+{
+	"name": "@sigrun/recall",
+	"version": "0.1.0",
+	"description": "Cross-conversation recall extension for sigrun (pi-durable)",
+	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"test": "node scripts/check-manifest.mjs --expect-name @sigrun/recall && vitest run",
+		"typecheck": "tsc --noEmit",
+		"build": "tsc -p tsconfig.build.json",
+		"prepare": "npm run build"
+	},
+	"dependencies": {
+		"@sigrun/shared": "file:../sigrun/shared"
+	},
+	"peerDependencies": {
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0"
+	},
+	"devDependencies": {
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
+		"@sigrun/sigrun": "file:../sigrun",
+		"@types/node": "^26.6.4",
+		"tsx": "^4.23.15",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "github",
+		"url": "git+https://github.com/sigrun-ai/sigrun-recall.git"
+	},
+	"bugs": {
+		"url": "https://github.com/sigrun-ai/sigrun-recall/issues"
+	},
+	"homepage": "https://github.com/sigrun-ai/sigrun-recall#readme",
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	}
+}
