@@ -70,23 +70,46 @@ async function main(): Promise<void> {
 
 	const token = process.env.SIGRUN_TOKEN;
 	if (token === undefined || token === "") throw new Error("SIGRUN_TOKEN must contain a per-user API token");
-	const headers = { authorization: `Bearer ${token}` };
-	const whoamiResponse = await fetch(`${opts.baseUrl}/v1/auth/whoami`, { headers });
-	if (!whoamiResponse.ok) throw new Error(`whoami returned ${whoamiResponse.status}`);
-	const whoami = (await whoamiResponse.json()) as { user?: string; service?: boolean };
+	const preflight = await fetch(`${opts.baseUrl}/v1/auth/whoami`, {
+		headers: { authorization: `Bearer ${token}` },
+	});
+	if (!preflight.ok) throw new Error(`whoami returned ${preflight.status}`);
+	const whoami = (await preflight.json()) as { user?: string; service?: boolean };
 	if (whoami.service === true || whoami.user === undefined) {
 		throw new Error("refusing to import as a service token or without a user; use a per-user SIGRUN_TOKEN");
 	}
 	console.log(`importing as ${whoami.user}`);
-	let state: Record<string, number> = {};
+	await importChains(converted, opts, token, fetch);
+}
+
+export async function importChains(
+	converted: readonly { root: { id: string }; name: string; lines: string[]; bytes: number }[],
+	opts: { baseUrl?: string; state: string },
+	token: string,
+	fetchImpl: typeof fetch,
+): Promise<void> {
+	const headers = { authorization: `Bearer ${token}` };
+	let state: Record<string, number | { id: number; meta: boolean }> = {};
 	try {
-		state = JSON.parse(await readFile(opts.state, "utf8")) as Record<string, number>;
+		state = JSON.parse(await readFile(opts.state, "utf8")) as Record<string, number | { id: number; meta: boolean }>;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 	for (const chain of converted) {
-		if (state[chain.root.id] !== undefined) continue;
-		const response = await fetch(`${opts.baseUrl}/v1/conversations/import`, {
+		const existing = state[chain.root.id];
+		if (typeof existing === "number" || existing?.meta === true) continue;
+		if (existing !== undefined) {
+			const meta = await fetchImpl(`${opts.baseUrl}/v1/conversations/${existing.id}/meta`, {
+				method: "PATCH",
+				headers: { ...headers, "content-type": "application/json" },
+				body: JSON.stringify({ name: chain.name, archived: true }),
+			});
+			if (!meta.ok) throw new Error(`metadata ${chain.root.id} returned ${meta.status}`);
+			state[chain.root.id] = existing.id;
+			await writeFile(opts.state, JSON.stringify(state, null, 2) + "\n");
+			continue;
+		}
+		const response = await fetchImpl(`${opts.baseUrl}/v1/conversations/import`, {
 			method: "POST",
 			headers: { ...headers, "content-type": "text/plain" },
 			body: chain.lines.join("\n") + "\n",
@@ -99,7 +122,9 @@ async function main(): Promise<void> {
 		const imported = (await response.json()) as { id?: number; conversationId?: number };
 		const id = imported.id ?? imported.conversationId;
 		if (id === undefined) throw new Error(`import ${chain.root.id} returned no conversation id`);
-		const meta = await fetch(`${opts.baseUrl}/v1/conversations/${id}/meta`, {
+		state[chain.root.id] = { id, meta: false };
+		await writeFile(opts.state, JSON.stringify(state, null, 2) + "\n");
+		const meta = await fetchImpl(`${opts.baseUrl}/v1/conversations/${id}/meta`, {
 			method: "PATCH",
 			headers: { ...headers, "content-type": "application/json" },
 			body: JSON.stringify({ name: chain.name, archived: true }),
@@ -110,7 +135,9 @@ async function main(): Promise<void> {
 	}
 }
 
-main().catch((error) => {
-	console.error(error instanceof Error ? error.message : error);
-	process.exitCode = 1;
-});
+if (process.argv[1]?.endsWith("hermes-import.ts") && process.execArgv.some((arg) => arg.includes("tsx"))) {
+	main().catch((error) => {
+		console.error(error instanceof Error ? error.message : error);
+		process.exitCode = 1;
+	});
+}
