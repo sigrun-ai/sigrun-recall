@@ -1,8 +1,13 @@
 import { join } from "node:path";
 
-import { defineExtension } from "@earendil-works/pi-durable";
+import {
+	defineExtension,
+	type ConversationId,
+	type EntryId,
+} from "@earendil-works/pi-durable";
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
 
+import { captureConversation } from "./capture.js";
 import { RecallDb } from "./db.js";
 
 export interface FactoryDeps {
@@ -28,9 +33,28 @@ export default function createRecall(
 		);
 		return database;
 	}
-	void db;
-
 	return {
 		extension: defineExtension({ name: "@sigrun/recall" }),
+		runSettled: async (event, api, context) => {
+			try {
+				await captureConversation(
+					{
+						db: db(),
+						meta: (id) => host.conversations.meta(id as ConversationId),
+						now: deps.now ?? Date.now,
+					},
+					event.conversationId,
+					(query, limit, cursor) =>
+						api.entries(
+							{ ...query, minEntryId: query.minEntryId as EntryId | undefined },
+							limit,
+							cursor,
+							context,
+						),
+				);
+			} catch (error) {
+				console.error("recall: conversation capture failed", error);
+			}
+		},
 	};
 }
