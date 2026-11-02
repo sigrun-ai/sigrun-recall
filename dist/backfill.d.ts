@@ -17,4 +17,4 @@ export declare function runSweep(deps: BackfillDeps): Promise<{
     sweepAfter: number;
 }>;
 /** Register the one-phase cron backfill task. */
-export declare function createBackfillTask(deps: BackfillDeps): AnyTask;
+export declare function createBackfillTask(deps: BackfillDeps | (() => BackfillDeps)): AnyTask;

@@ -65,14 +65,15 @@ export async function runSweep(
 }
 
 /** Register the one-phase cron backfill task. */
-export function createBackfillTask(deps: BackfillDeps): AnyTask {
+export function createBackfillTask(deps: BackfillDeps | (() => BackfillDeps)): AnyTask {
+	const resolve = typeof deps === "function" ? deps : () => deps;
 	return defineTask({
 		name: BACKFILL_TASK_NAME,
 		version: 1,
 		initial: (): { phase: "sweep" } => ({ phase: "sweep" }),
 		phases: {
 			sweep: async (_task, runtime, context) => {
-				const result = await runSweep(deps);
+				const result = await runSweep(resolve());
 				await runtime.commit(
 					() => ({
 						status: "terminal" as const,

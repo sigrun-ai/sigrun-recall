@@ -38,6 +38,16 @@ export default function createRecall(
 ): SigrunExtensionResult {
 	let database: RecallDb | undefined;
 	let embedder: ReturnType<typeof createEmbedder> | undefined;
+	let embeddingKey: string | undefined;
+	let services: {
+		searcher: ReturnType<typeof createSearcher>;
+		tools: ReturnType<typeof createTools>;
+	} | undefined;
+	const pending = new Set<Promise<void>>();
+	const trackEmbedding = (work: Promise<void>) => {
+		pending.add(work);
+		void work.finally(() => pending.delete(work));
+	};
 
 	// Capture/search surfaces added by later tasks share this one lazy handle.
 	// Core does not create paths.data; RecallDb.open creates its parent.
@@ -51,9 +61,13 @@ export default function createRecall(
 	async function semantic() {
 		const settings = await resolveSettings(host.stores.settings);
 		if (settings.embedding === undefined) return {};
-		embedder ??= createEmbedder(settings.embedding, () =>
-			host.stores.secrets.get("embedding-api-key"),
-		);
+		const key = JSON.stringify(settings.embedding);
+		if (embedder === undefined || embeddingKey !== key) {
+			embedder = createEmbedder(settings.embedding, () =>
+				host.stores.secrets.get("embedding-api-key"),
+			);
+			embeddingKey = key;
+		}
 		return {
 			embedder,
 			index: createSqliteVectorIndex(db()),
@@ -61,7 +75,6 @@ export default function createRecall(
 		};
 	}
 
-	// Task 8/10 consumes this accessor when constructing the Searcher.
 	async function vectors() {
 		const semanticDeps = await semantic();
 		if (
@@ -77,7 +90,6 @@ export default function createRecall(
 			semanticDeps.timeoutMs,
 		);
 	}
-	void vectors;
 
 	const artifactStore = () =>
 		createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
@@ -92,38 +104,59 @@ export default function createRecall(
 		}
 	};
 	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
-	const toolDb = db();
-	const toolArtifactStore = artifactStore();
 	const pendingVectors = async () => {
 		const semanticDeps = await semantic();
 		if (semanticDeps.embedder !== undefined && semanticDeps.index !== undefined) {
 			await embedPending(db(), semanticDeps.embedder, semanticDeps.index, entry, 500);
 		}
 	};
-	const backfillDeps = {
+	const backfillDeps = () => ({
 		host,
 		capture: captureConversation,
-		db: toolDb,
+		db: db(),
 		vectors: pendingVectors,
 		now: deps.now ?? Date.now,
-	};
-	const searcher = createSearcher({
-		db: toolDb,
-		meta,
-		entry,
-		userSettings: async (user) => {
-			try {
-				return await resolveUserSettings(host.stores.user(user).settings);
-			} catch {
-				return { autoRecall: true, localProviders: [] };
-			}
-		},
-		artifactStore: toolArtifactStore,
-		now: deps.now ?? Date.now,
 	});
+	function getServices() {
+		if (services !== undefined) return services;
+		const vectorIndex = createSqliteVectorIndex(db());
+		const searcher = createSearcher({
+			db: db(),
+			meta,
+			entry,
+			userSettings,
+			artifactStore: artifactStore(),
+			vectors: {
+				query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
+			},
+			now: deps.now ?? Date.now,
+		});
+		services = {
+			searcher,
+			tools: createTools({
+				db: db(),
+				searcher,
+				artifactStore: artifactStore(),
+				meta,
+				entries: (conversationId, query, limit, cursor) =>
+					host.conversations.entries(
+						conversationId as ConversationId,
+						{
+							...query,
+							minEntryId: query.minEntryId as EntryId | undefined,
+							maxEntryId: query.maxEntryId as EntryId | undefined,
+						},
+						limit,
+						cursor,
+					),
+				localProviders,
+			}),
+		};
+		void vectorIndex;
+		return services;
+	}
 
-	return {
-		extension: defineExtension({
+	const extension = {
 			name: "@sigrun/recall",
 			hooks: [
 				hook(ToolTask, {
@@ -148,21 +181,23 @@ export default function createRecall(
 				hook(GenerationTask, {
 					beforeRequest: async (request, api, context) => {
 						try {
-							const meta = await host.conversations.meta(api.conversationId);
+							const liveMeta = await host.conversations.meta(api.conversationId);
 							const settings =
-								meta.owner === undefined
+								liveMeta.owner === undefined
 									? { autoRecall: true, localProviders: [] }
-								: await userSettings(meta.owner);
+								: await userSettings(liveMeta.owner);
 							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
 							const messages = await applyRecall(request.messages, {
 								conversationId: api.conversationId,
 								db: db(),
-								searcher,
-								meta,
+								searcher: getServices().searcher,
+								meta: liveMeta,
 								model: agent?.model,
 								autoRecall: settings.autoRecall,
-								internal: meta.internal === true,
+								internal: liveMeta.internal === true,
 								ownerLocalProviders: settings.localProviders,
+								sourceMeta: (id) => meta(id),
+								sourceLocalProviders: localProviders,
 							});
 							return messages === undefined ? undefined : { messages };
 						} catch (error) {
@@ -172,26 +207,16 @@ export default function createRecall(
 					},
 				}),
 			],
-			tools: createTools({
-				db: toolDb,
-				searcher,
-				artifactStore: toolArtifactStore,
-				meta,
-				entries: (conversationId, query, limit, cursor) =>
-					host.conversations.entries(
-						conversationId as ConversationId,
-						{
-							...query,
-							minEntryId: query.minEntryId as EntryId | undefined,
-							maxEntryId: query.maxEntryId as EntryId | undefined,
-						},
-						limit,
-						cursor,
-					),
-				localProviders,
-			}),
-				tasks: [createBackfillTask(backfillDeps)],
-		}),
+			get tools() {
+				return getServices().tools;
+			},
+			get tasks() {
+				return [createBackfillTask(backfillDeps)];
+			},
+	};
+
+	return {
+		extension: defineExtension(extension),
 		jobs: [
 			{
 				name: "backfill",
@@ -199,7 +224,12 @@ export default function createRecall(
 				action: { kind: "task", task: BACKFILL_TASK_NAME },
 			},
 		],
-		routes: createRoutes({ searcher, sweep: () => runSweep(backfillDeps) }),
+		routes: createRoutes({
+			searcher: {
+				search: (query, context, limit) => getServices().searcher.search(query, context, limit),
+			},
+			sweep: () => runSweep(backfillDeps()),
+		}),
 		runSettled: async (event, api, context) => {
 			try {
 				const semanticDeps = await semantic();
@@ -209,6 +239,7 @@ export default function createRecall(
 						meta: (id) => host.conversations.meta(id as ConversationId),
 						now: deps.now ?? Date.now,
 						...semanticDeps,
+						trackEmbedding,
 					},
 					event.conversationId,
 					(query, limit, cursor) =>
@@ -222,6 +253,14 @@ export default function createRecall(
 			} catch (error) {
 				console.error("recall: conversation capture failed", error);
 			}
+		},
+		harnessShutdown: async () => {
+			const deadline = Date.now() + 30_000;
+			while (pending.size > 0 && Date.now() < deadline) {
+				await Promise.allSettled([...pending]);
+			}
+			database?.close();
+			database = undefined;
 		},
 	};
 }

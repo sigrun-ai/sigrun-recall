@@ -18,6 +18,13 @@ import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vector
 export default function createRecall(host, deps = {}) {
     let database;
     let embedder;
+    let embeddingKey;
+    let services;
+    const pending = new Set();
+    const trackEmbedding = (work) => {
+        pending.add(work);
+        void work.finally(() => pending.delete(work));
+    };
     // Capture/search surfaces added by later tasks share this one lazy handle.
     // Core does not create paths.data; RecallDb.open creates its parent.
     function db() {
@@ -28,14 +35,17 @@ export default function createRecall(host, deps = {}) {
         const settings = await resolveSettings(host.stores.settings);
         if (settings.embedding === undefined)
             return {};
-        embedder ??= createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"));
+        const key = JSON.stringify(settings.embedding);
+        if (embedder === undefined || embeddingKey !== key) {
+            embedder = createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"));
+            embeddingKey = key;
+        }
         return {
             embedder,
             index: createSqliteVectorIndex(db()),
             timeoutMs: settings.embedding.timeoutMs,
         };
     }
-    // Task 8/10 consumes this accessor when constructing the Searcher.
     async function vectors() {
         const semanticDeps = await semantic();
         if (semanticDeps.embedder === undefined ||
@@ -45,7 +55,6 @@ export default function createRecall(host, deps = {}) {
         }
         return createVectorArm(semanticDeps.embedder, semanticDeps.index, semanticDeps.timeoutMs);
     }
-    void vectors;
     const artifactStore = () => createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
@@ -58,92 +67,40 @@ export default function createRecall(host, deps = {}) {
         }
     };
     const localProviders = async (user) => (await userSettings(user)).localProviders;
-    const toolDb = db();
-    const toolArtifactStore = artifactStore();
     const pendingVectors = async () => {
         const semanticDeps = await semantic();
         if (semanticDeps.embedder !== undefined && semanticDeps.index !== undefined) {
             await embedPending(db(), semanticDeps.embedder, semanticDeps.index, entry, 500);
         }
     };
-    const backfillDeps = {
+    const backfillDeps = () => ({
         host,
         capture: captureConversation,
-        db: toolDb,
+        db: db(),
         vectors: pendingVectors,
         now: deps.now ?? Date.now,
-    };
-    const searcher = createSearcher({
-        db: toolDb,
-        meta,
-        entry,
-        userSettings: async (user) => {
-            try {
-                return await resolveUserSettings(host.stores.user(user).settings);
-            }
-            catch {
-                return { autoRecall: true, localProviders: [] };
-            }
-        },
-        artifactStore: toolArtifactStore,
-        now: deps.now ?? Date.now,
     });
-    return {
-        extension: defineExtension({
-            name: "@sigrun/recall",
-            hooks: [
-                hook(ToolTask, {
-                    afterTool: async (call, result, api) => {
-                        try {
-                            const meta = await host.conversations.meta(api.conversationId);
-                            if (meta.internal === true)
-                                return undefined;
-                            const settings = await resolveSettings(host.stores.settings);
-                            return externalize(result, call, {
-                                store: artifactStore(),
-                                thresholdBytes: settings.externalizeBytes,
-                                conversationId: api.conversationId,
-                                owner: meta.owner ?? null,
-                                now: (deps.now ?? Date.now)(),
-                            });
-                        }
-                        catch (error) {
-                            console.error("recall: tool-result externalization failed", error);
-                            return undefined;
-                        }
-                    },
-                }),
-                hook(GenerationTask, {
-                    beforeRequest: async (request, api, context) => {
-                        try {
-                            const meta = await host.conversations.meta(api.conversationId);
-                            const settings = meta.owner === undefined
-                                ? { autoRecall: true, localProviders: [] }
-                                : await userSettings(meta.owner);
-                            const agent = await api.snapshot(AgentDoc, api.conversationId, context);
-                            const messages = await applyRecall(request.messages, {
-                                conversationId: api.conversationId,
-                                db: db(),
-                                searcher,
-                                meta,
-                                model: agent?.model,
-                                autoRecall: settings.autoRecall,
-                                internal: meta.internal === true,
-                                ownerLocalProviders: settings.localProviders,
-                            });
-                            return messages === undefined ? undefined : { messages };
-                        }
-                        catch (error) {
-                            console.error("recall: automatic recall failed", error);
-                            return undefined;
-                        }
-                    },
-                }),
-            ],
+    function getServices() {
+        if (services !== undefined)
+            return services;
+        const vectorIndex = createSqliteVectorIndex(db());
+        const searcher = createSearcher({
+            db: db(),
+            meta,
+            entry,
+            userSettings,
+            artifactStore: artifactStore(),
+            vectors: {
+                query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
+            },
+            now: deps.now ?? Date.now,
+        });
+        services = {
+            searcher,
             tools: createTools({
-                db: toolDb,
+                db: db(),
                 searcher,
-                artifactStore: toolArtifactStore,
+                artifactStore: artifactStore(),
                 meta,
                 entries: (conversationId, query, limit, cursor) => host.conversations.entries(conversationId, {
                     ...query,
@@ -152,8 +109,72 @@ export default function createRecall(host, deps = {}) {
                 }, limit, cursor),
                 localProviders,
             }),
-            tasks: [createBackfillTask(backfillDeps)],
-        }),
+        };
+        void vectorIndex;
+        return services;
+    }
+    const extension = {
+        name: "@sigrun/recall",
+        hooks: [
+            hook(ToolTask, {
+                afterTool: async (call, result, api) => {
+                    try {
+                        const meta = await host.conversations.meta(api.conversationId);
+                        if (meta.internal === true)
+                            return undefined;
+                        const settings = await resolveSettings(host.stores.settings);
+                        return externalize(result, call, {
+                            store: artifactStore(),
+                            thresholdBytes: settings.externalizeBytes,
+                            conversationId: api.conversationId,
+                            owner: meta.owner ?? null,
+                            now: (deps.now ?? Date.now)(),
+                        });
+                    }
+                    catch (error) {
+                        console.error("recall: tool-result externalization failed", error);
+                        return undefined;
+                    }
+                },
+            }),
+            hook(GenerationTask, {
+                beforeRequest: async (request, api, context) => {
+                    try {
+                        const liveMeta = await host.conversations.meta(api.conversationId);
+                        const settings = liveMeta.owner === undefined
+                            ? { autoRecall: true, localProviders: [] }
+                            : await userSettings(liveMeta.owner);
+                        const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+                        const messages = await applyRecall(request.messages, {
+                            conversationId: api.conversationId,
+                            db: db(),
+                            searcher: getServices().searcher,
+                            meta: liveMeta,
+                            model: agent?.model,
+                            autoRecall: settings.autoRecall,
+                            internal: liveMeta.internal === true,
+                            ownerLocalProviders: settings.localProviders,
+                            sourceMeta: (id) => meta(id),
+                            sourceLocalProviders: localProviders,
+                        });
+                        return messages === undefined ? undefined : { messages };
+                    }
+                    catch (error) {
+                        console.error("recall: automatic recall failed", error);
+                        return undefined;
+                    }
+                },
+            }),
+        ],
+        get tools() {
+            return getServices().tools;
+        },
+        get tasks() {
+            return [createBackfillTask(backfillDeps)];
+        },
+    };
+    return {
+        extension: defineExtension(extension),
         jobs: [
             {
                 name: "backfill",
@@ -161,7 +182,12 @@ export default function createRecall(host, deps = {}) {
                 action: { kind: "task", task: BACKFILL_TASK_NAME },
             },
         ],
-        routes: createRoutes({ searcher, sweep: () => runSweep(backfillDeps) }),
+        routes: createRoutes({
+            searcher: {
+                search: (query, context, limit) => getServices().searcher.search(query, context, limit),
+            },
+            sweep: () => runSweep(backfillDeps()),
+        }),
         runSettled: async (event, api, context) => {
             try {
                 const semanticDeps = await semantic();
@@ -170,11 +196,20 @@ export default function createRecall(host, deps = {}) {
                     meta: (id) => host.conversations.meta(id),
                     now: deps.now ?? Date.now,
                     ...semanticDeps,
+                    trackEmbedding,
                 }, event.conversationId, (query, limit, cursor) => api.entries({ ...query, minEntryId: query.minEntryId }, limit, cursor, context));
             }
             catch (error) {
                 console.error("recall: conversation capture failed", error);
             }
+        },
+        harnessShutdown: async () => {
+            const deadline = Date.now() + 30_000;
+            while (pending.size > 0 && Date.now() < deadline) {
+                await Promise.allSettled([...pending]);
+            }
+            database?.close();
+            database = undefined;
         },
     };
 }
