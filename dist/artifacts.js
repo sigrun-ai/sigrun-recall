@@ -51,7 +51,7 @@ export function createArtifactStore(db, dir) {
             const path = pathForHandle(handle);
             if (path === undefined || !existsSync(path))
                 return undefined;
-            return readFileSync(path, "utf8").slice(offset, offset + length);
+            return readFileSync(path).subarray(offset, offset + length).toString("utf8");
         },
     };
 }
@@ -59,7 +59,10 @@ export function createArtifactStore(db, dir) {
 export function outline(text) {
     const headings = [];
     for (const match of text.matchAll(/^#{1,6} (.+)$/gm)) {
-        headings.push({ title: match[1], offset: match.index });
+        headings.push({
+            title: match[1],
+            offset: Buffer.byteLength(text.slice(0, match.index)),
+        });
     }
     if (headings.length > 0)
         return headings;
@@ -71,11 +74,13 @@ export function outline(text) {
 }
 /** Render the retained head and bounded navigation stub for an artifact. */
 export function renderStub(text, handle, headBytes) {
-    const bytes = Buffer.byteLength(text);
-    let head = text.slice(0, headBytes);
-    const lastLine = head.lastIndexOf("\n");
+    const buffer = Buffer.from(text, "utf8");
+    const bytes = buffer.length;
+    let headBuffer = buffer.subarray(0, headBytes);
+    const lastLine = headBuffer.lastIndexOf(0x0a);
     if (lastLine >= 0)
-        head = head.slice(0, lastLine + 1);
+        headBuffer = headBuffer.subarray(0, lastLine + 1);
+    const head = headBuffer.toString("utf8");
     const lines = outline(text)
         .slice(0, 40)
         .map(({ title, offset }) => `- ${title} (offset ${offset})`);

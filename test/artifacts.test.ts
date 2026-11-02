@@ -128,7 +128,7 @@ describe("artifacts", () => {
 		const text = "prefix\n" + "A".repeat(1024 * 1024) + "\nsuffix" + "x".repeat(5 * 1024 * 1024);
 		const replaced = externalize(result(text), call(), deps());
 		const stub = replaced?.output?.[0]?.type === "text" ? replaced.output[0].text : "";
-		expect(stub.length).toBeLessThanOrEqual(9000);
+		expect(Buffer.byteLength(stub)).toBeLessThanOrEqual(9000);
 		const [file] = readdirSync(dir);
 		expect(readFileSync(join(dir, file!), "utf8")).toBe(text);
 		const handle = `a:${file!.slice(0, 16)}`;
@@ -141,6 +141,22 @@ describe("artifacts", () => {
 			expect(/[A-Za-z0-9+/]{200}/.test(indexed!)).toBe(false);
 		}
 		expect(db.item(Math.ceil(text.length / 2000) + 1)).toBeUndefined();
+	});
+
+	it("a multibyte result's stub head is byte-bounded and outline offsets are byte offsets", async () => {
+		const { deps } = await setup();
+		const text = `é\n# Préface\n${"界".repeat(6000)}\n## Suite\n${"x".repeat(8000)}`;
+		const replaced = externalize(result(text), call(), deps());
+		const stub = replaced?.output?.[0]?.type === "text" ? replaced.output[0].text : "";
+		const marker = stub.indexOf("[recall:");
+		const head = stub.slice(0, marker).replace(/\n\n$/, "");
+		expect(Buffer.byteLength(head)).toBeLessThanOrEqual(6144);
+		expect(Buffer.from(head, "utf8").toString("utf8")).toBe(head);
+		expect(head).toBe(text.slice(0, text.indexOf("界")));
+		expect(outline(text)).toEqual([
+			{ title: "Préface", offset: 3 },
+			{ title: "Suite", offset: 3 + Buffer.byteLength("# Préface\n") + 6000 * 3 + 1 },
+		]);
 	});
 
 	it('outline of "# A\ntext\n## B\n" returns [{title:"A",offset:0},{title:"B",offset:9}]', () => {
