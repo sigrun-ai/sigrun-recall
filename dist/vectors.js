@@ -1,0 +1,73 @@
+/** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
+export function createSqliteVectorIndex(db, pageSize = 2000) {
+    return {
+        upsert(itemId, vec) {
+            db.upsertVector(itemId, vec);
+        },
+        query(vec, k, signal) {
+            if (k <= 0)
+                return [];
+            const best = [];
+            let after = 0;
+            for (let page = 0; page < 50; page += 1) {
+                if (signal?.aborted === true)
+                    break;
+                const rows = db.listVectorsPage(after, pageSize);
+                for (const row of rows) {
+                    const score = cosine(vec, row.vec);
+                    best.push({ itemId: row.itemId, score });
+                    best.sort((a, b) => b.score - a.score);
+                    if (best.length > k)
+                        best.pop();
+                }
+                if (rows.length < pageSize)
+                    break;
+                after = rows.at(-1).itemId;
+            }
+            return best;
+        },
+    };
+}
+function cosine(left, right) {
+    const rightVector = new Float32Array(right.buffer.slice(right.byteOffset, right.byteOffset + right.byteLength));
+    if (left.length !== rightVector.length)
+        return -1;
+    let dot = 0;
+    let leftNorm = 0;
+    let rightNorm = 0;
+    for (let index = 0; index < left.length; index += 1) {
+        dot += left[index] * rightVector[index];
+        leftNorm += left[index] ** 2;
+        rightNorm += rightVector[index] ** 2;
+    }
+    if (leftNorm === 0 || rightNorm === 0)
+        return 0;
+    return dot / Math.sqrt(leftNorm * rightNorm);
+}
+/** Add a semantic arm that degrades to lexical search on embedding failure. */
+export function createVectorArm(embedder, index, timeoutMs) {
+    let lastWarning = -Infinity;
+    return {
+        async query(text, candidateLimit) {
+            const signal = AbortSignal.timeout(timeoutMs);
+            try {
+                const vectors = await embedder.embed([text], signal);
+                const vector = vectors[0];
+                if (vector === undefined)
+                    return [];
+                return index.query(vector, candidateLimit, signal).map(({ itemId, score }) => ({
+                    itemId,
+                    rank: score,
+                }));
+            }
+            catch (error) {
+                const now = Date.now();
+                if (now - lastWarning >= 60_000) {
+                    console.warn("recall: semantic search unavailable; using lexical results", error);
+                    lastWarning = now;
+                }
+                return [];
+            }
+        },
+    };
+}

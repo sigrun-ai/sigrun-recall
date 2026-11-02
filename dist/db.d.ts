@@ -29,6 +29,7 @@ export declare class RecallDb {
         createdAt: number;
     }): void;
     item(id: number): ItemRow | undefined;
+    itemByPassage(conversationId: number, entryId: number, messageIndex: number, offset: number): ItemRow | undefined;
     searchPorter(query: string, limit: number): {
         id: number;
         bm25: number;
@@ -42,6 +43,11 @@ export declare class RecallDb {
     itemText(id: number): string | undefined;
     /** Item ids matching a trigram FTS5 expression, in match order. */
     matchTrigram(expression: string): number[];
+    upsertVector(itemId: number, vec: Float32Array): void;
+    listVectorsPage(after: number, limit: number): {
+        itemId: number;
+        vec: Buffer;
+    }[];
     cursor(conversationId: number): number | undefined;
     setCursor(conversationId: number, entryId: number): void;
     taintFrom(conversationId: number): number | undefined;

@@ -15,6 +15,7 @@ export async function captureConversation(deps, conversationId, read) {
     let cursor;
     do {
         const page = await read(query, PAGE_SIZE, cursor);
+        const insertedForEmbedding = [];
         for (const entry of page.items) {
             if (entry.conversationId !== conversationId)
                 continue;
@@ -35,9 +36,18 @@ export async function captureConversation(deps, conversationId, read) {
                     at: passage.at,
                     title: meta.name ?? meta.autoName ?? null,
                 }, redact(passage.text));
-                if (inserted !== undefined)
+                if (inserted !== undefined) {
                     indexed += 1;
+                    insertedForEmbedding.push({
+                        id: inserted,
+                        text: passage.text,
+                        localOnly: taintFrom !== undefined && passage.entryId >= taintFrom,
+                    });
+                }
             }
+        }
+        if (deps.embedder !== undefined && deps.index !== undefined) {
+            void embedPage(deps.embedder, deps.index, insertedForEmbedding);
         }
         const lastEntry = page.items.at(-1);
         if (lastEntry !== undefined)
@@ -45,4 +55,21 @@ export async function captureConversation(deps, conversationId, read) {
         cursor = page.next;
     } while (cursor !== undefined);
     return { indexed };
+}
+async function embedPage(embedder, index, inserted) {
+    const candidates = inserted.filter(({ localOnly }) => !localOnly || embedder.local);
+    for (let offset = 0; offset < candidates.length; offset += 64) {
+        const batch = candidates.slice(offset, offset + 64);
+        try {
+            const vectors = await embedder.embed(batch.map(({ text }) => text));
+            for (const [indexInBatch, vector] of vectors.entries()) {
+                const candidate = batch[indexInBatch];
+                if (candidate !== undefined)
+                    index.upsert(candidate.id, vector);
+            }
+        }
+        catch (error) {
+            console.error("recall: passage embedding failed; item remains lexical-only", error);
+        }
+    }
 }

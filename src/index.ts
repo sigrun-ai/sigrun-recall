@@ -13,6 +13,8 @@ import { createArtifactStore, externalize } from "./artifacts.js";
 import { captureConversation } from "./capture.js";
 import { resolveSettings } from "./config.js";
 import { RecallDb } from "./db.js";
+import { createEmbedder } from "./embed.js";
+import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
 
 export interface FactoryDeps {
 	openDb?: (path: string) => RecallDb;
@@ -28,6 +30,7 @@ export default function createRecall(
 	deps: FactoryDeps = {},
 ): SigrunExtensionResult {
 	let database: RecallDb | undefined;
+	let embedder: ReturnType<typeof createEmbedder> | undefined;
 
 	// Capture/search surfaces added by later tasks share this one lazy handle.
 	// Core does not create paths.data; RecallDb.open creates its parent.
@@ -37,6 +40,27 @@ export default function createRecall(
 		);
 		return database;
 	}
+
+	async function semantic() {
+		const settings = await resolveSettings(host.stores.settings);
+		if (settings.embedding === undefined) return {};
+		embedder ??= createEmbedder(settings.embedding, () =>
+			host.stores.secrets.get("embedding-api-key"),
+		);
+		return { embedder, index: createSqliteVectorIndex(db()) };
+	}
+
+	// Task 8/10 consumes this accessor when constructing the Searcher.
+	async function vectors() {
+		const semanticDeps = await semantic();
+		if (semanticDeps.embedder === undefined || semanticDeps.index === undefined) {
+			return undefined;
+		}
+		const timeoutMs = (await resolveSettings(host.stores.settings)).embedding!.timeoutMs;
+		return createVectorArm(semanticDeps.embedder, semanticDeps.index, timeoutMs);
+	}
+	void vectors;
+
 	return {
 		extension: defineExtension({
 			name: "@sigrun/recall",
@@ -67,11 +91,13 @@ export default function createRecall(
 		}),
 		runSettled: async (event, api, context) => {
 			try {
+				const semanticDeps = await semantic();
 				await captureConversation(
 					{
 						db: db(),
 						meta: (id) => host.conversations.meta(id as ConversationId),
 						now: deps.now ?? Date.now,
+						...semanticDeps,
 					},
 					event.conversationId,
 					(query, limit, cursor) =>

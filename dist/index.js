@@ -4,18 +4,38 @@ import { createArtifactStore, externalize } from "./artifacts.js";
 import { captureConversation } from "./capture.js";
 import { resolveSettings } from "./config.js";
 import { RecallDb } from "./db.js";
+import { createEmbedder } from "./embed.js";
+import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  */
 export default function createRecall(host, deps = {}) {
     let database;
+    let embedder;
     // Capture/search surfaces added by later tasks share this one lazy handle.
     // Core does not create paths.data; RecallDb.open creates its parent.
     function db() {
         database ??= (deps.openDb ?? RecallDb.open)(join(host.stores.paths.data, "recall.db"));
         return database;
     }
+    async function semantic() {
+        const settings = await resolveSettings(host.stores.settings);
+        if (settings.embedding === undefined)
+            return {};
+        embedder ??= createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"));
+        return { embedder, index: createSqliteVectorIndex(db()) };
+    }
+    // Task 8/10 consumes this accessor when constructing the Searcher.
+    async function vectors() {
+        const semanticDeps = await semantic();
+        if (semanticDeps.embedder === undefined || semanticDeps.index === undefined) {
+            return undefined;
+        }
+        const timeoutMs = (await resolveSettings(host.stores.settings)).embedding.timeoutMs;
+        return createVectorArm(semanticDeps.embedder, semanticDeps.index, timeoutMs);
+    }
+    void vectors;
     return {
         extension: defineExtension({
             name: "@sigrun/recall",
@@ -45,10 +65,12 @@ export default function createRecall(host, deps = {}) {
         }),
         runSettled: async (event, api, context) => {
             try {
+                const semanticDeps = await semantic();
                 await captureConversation({
                     db: db(),
                     meta: (id) => host.conversations.meta(id),
                     now: deps.now ?? Date.now,
+                    ...semanticDeps,
                 }, event.conversationId, (query, limit, cursor) => api.entries({ ...query, minEntryId: query.minEntryId }, limit, cursor, context));
             }
             catch (error) {

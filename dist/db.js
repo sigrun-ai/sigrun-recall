@@ -145,6 +145,13 @@ export class RecallDb {
         const row = this.db.prepare("SELECT * FROM items WHERE id = ?").get(id);
         return row === undefined ? undefined : { ...row, job: row.job === 1 };
     }
+    itemByPassage(conversationId, entryId, messageIndex, offset) {
+        const row = this.db
+            .prepare(`SELECT * FROM items WHERE conversationId = ? AND entryId = ?
+				 AND messageIndex = ? AND offset = ? AND kind IN ('turn', 'tool')`)
+            .get(conversationId, entryId, messageIndex, offset);
+        return row === undefined ? undefined : { ...row, job: row.job === 1 };
+    }
     searchPorter(query, limit) {
         return this.searchFts("fts_porter", query, limit);
     }
@@ -174,6 +181,19 @@ export class RecallDb {
             .prepare("SELECT rowid FROM fts_trigram WHERE fts_trigram MATCH ?")
             .all(expression);
         return rows.map((row) => row.rowid);
+    }
+    upsertVector(itemId, vec) {
+        const bytes = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+        this.db
+            .prepare(`INSERT INTO vectors (itemId, dim, vec) VALUES (?, ?, ?)
+				 ON CONFLICT(itemId) DO UPDATE SET dim = excluded.dim, vec = excluded.vec`)
+            .run(itemId, vec.length, bytes);
+    }
+    listVectorsPage(after, limit) {
+        // SAFETY: the vectors schema stores integer item ids and Float32 BLOB bytes.
+        return this.db
+            .prepare("SELECT itemId, vec FROM vectors WHERE itemId > ? ORDER BY itemId LIMIT ?")
+            .all(after, limit);
     }
     cursor(conversationId) {
         return this.entryId("cursors", conversationId);

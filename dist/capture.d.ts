@@ -1,10 +1,15 @@
 import type { Cursor, EntryRecord, Page } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { RecallDb } from "./db.js";
+import type { Embedder } from "./embed.js";
+import type { VectorIndex } from "./vectors.js";
 export interface CaptureDeps {
     db: RecallDb;
     meta(id: number): Promise<SessionMeta>;
     now(): number;
+    /** Optional best-effort semantic indexing; capture never awaits embedding. */
+    embedder?: Embedder;
+    index?: VectorIndex;
 }
 export type EntryReader = (query: {
     minEntryId?: number;
