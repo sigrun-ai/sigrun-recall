@@ -206,6 +206,30 @@ export class RecallDb {
 		return row === undefined ? undefined : { ...row, job: row.job === 1 };
 	}
 
+	searchPorter(query: string, limit: number): { id: number; bm25: number }[] {
+		return this.searchFts("fts_porter", query, limit);
+	}
+
+	searchTrigram(query: string, limit: number): { id: number; bm25: number }[] {
+		return this.searchFts("fts_trigram", query, limit);
+	}
+
+	private searchFts(
+		table: "fts_porter" | "fts_trigram",
+		query: string,
+		limit: number,
+	): { id: number; bm25: number }[] {
+		// SAFETY: table is an internal two-value union; values are bound parameters.
+		// The query selects one integer id and one numeric bm25 rank per row.
+		const rows = this.db
+			.prepare(
+				`SELECT rowid AS id, bm25(${table}) AS rank FROM ${table}
+				 WHERE ${table} MATCH ? ORDER BY rank LIMIT ?`,
+			)
+			.all(query, limit) as unknown as { id: number; rank: number }[];
+		return rows.map(({ id, rank }) => ({ id, bm25: rank }));
+	}
+
 	/** Indexed text for one item from the porter FTS table. */
 	itemText(id: number): string | undefined {
 		const row = this.db

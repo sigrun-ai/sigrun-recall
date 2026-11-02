@@ -29,6 +29,15 @@ export declare class RecallDb {
         createdAt: number;
     }): void;
     item(id: number): ItemRow | undefined;
+    searchPorter(query: string, limit: number): {
+        id: number;
+        bm25: number;
+    }[];
+    searchTrigram(query: string, limit: number): {
+        id: number;
+        bm25: number;
+    }[];
+    private searchFts;
     /** Indexed text for one item from the porter FTS table. */
     itemText(id: number): string | undefined;
     /** Item ids matching a trigram FTS5 expression, in match order. */

@@ -145,6 +145,21 @@ export class RecallDb {
         const row = this.db.prepare("SELECT * FROM items WHERE id = ?").get(id);
         return row === undefined ? undefined : { ...row, job: row.job === 1 };
     }
+    searchPorter(query, limit) {
+        return this.searchFts("fts_porter", query, limit);
+    }
+    searchTrigram(query, limit) {
+        return this.searchFts("fts_trigram", query, limit);
+    }
+    searchFts(table, query, limit) {
+        // SAFETY: table is an internal two-value union; values are bound parameters.
+        // The query selects one integer id and one numeric bm25 rank per row.
+        const rows = this.db
+            .prepare(`SELECT rowid AS id, bm25(${table}) AS rank FROM ${table}
+				 WHERE ${table} MATCH ? ORDER BY rank LIMIT ?`)
+            .all(query, limit);
+        return rows.map(({ id, rank }) => ({ id, bm25: rank }));
+    }
     /** Indexed text for one item from the porter FTS table. */
     itemText(id) {
         const row = this.db
