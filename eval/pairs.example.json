@@ -1,0 +1,17 @@
+[
+  {
+    "query": "example.invalid deployment checklist",
+    "expect": 101,
+    "note": "Synthetic example only; replace with user-approved private pairs."
+  },
+  {
+    "query": "synthetic database migration",
+    "expect": 202,
+    "note": "Fake conversation id for demonstrating the eval shape."
+  },
+  {
+    "query": "example.invalid missing material",
+    "expect": 303,
+    "note": "An intentional miss demonstrates reciprocal-rank accounting."
+  }
+]
