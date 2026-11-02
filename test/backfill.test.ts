@@ -69,7 +69,26 @@ describe("backfill", () => {
 	it("backfill interrupted mid-conversation and run again leaves exactly one item per passage", async () => {
 		const db = RecallDb.open(":memory:");
 		const source = host([entry(1, 1, "first passage"), entry(2, 1, "second passage")]);
-		await runSweep(deps(source, db, 1));
+		// Simulate an interrupted capture: entry 1 was committed, entry 2 was not.
+		db.insertItem(
+			{
+				conversationId: 1,
+				owner: "alice",
+				kind: "turn",
+				entryId: 1,
+				messageIndex: 0,
+				offset: 0,
+				length: 13,
+				artifact: null,
+				job: false,
+				cls: "normal",
+				at: NOW,
+				title: null,
+			},
+			"first passage",
+		);
+		db.setCursor(1, 1);
+		await runSweep(deps(source, db));
 		await runSweep(deps(source, db));
 		expect(db.item(1)).toMatchObject({ entryId: 1 });
 		expect(db.item(2)).toMatchObject({ entryId: 2 });
@@ -81,9 +100,9 @@ describe("backfill", () => {
 		const db = RecallDb.open(":memory:");
 		const calls: number[] = [];
 		const source = host([entry(1, 1, "first"), entry(2, 1, "second")], calls);
-		await runSweep(deps(source, db, 1));
+		db.setCursor(1, 1);
 		await runSweep(deps(source, db));
-		expect(db.item(2)?.entryId).toBe(2);
+		expect(db.item(1)?.entryId).toBe(2);
 		await runSweep(deps(source, db));
 		expect(calls.at(-1)).toBe(1);
 		db.close();

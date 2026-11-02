@@ -6,7 +6,7 @@ import { captureConversation } from "../src/capture.js";
 import { RecallDb } from "../src/db.js";
 import { createSearcher, type SearchContext } from "../src/search.js";
 import type { Embedder } from "../src/embed.js";
-import { createSqliteVectorIndex, createVectorArm } from "../src/vectors.js";
+import { createSqliteVectorIndex, createVectorArm, embedPending } from "../src/vectors.js";
 
 function meta(): SessionMeta {
 	return {
@@ -37,6 +37,35 @@ function context(): SearchContext {
 }
 
 describe("vectors", () => {
+	it("embedPending does not starve behind unembeddable items", async () => {
+		const db = RecallDb.open(":memory:");
+		const row = (entryId: number, cls: "normal" | "local-only") => ({
+			conversationId: 1,
+			owner: "alice",
+			kind: "turn" as const,
+			entryId,
+			messageIndex: 0,
+			offset: 0,
+			length: 4,
+			artifact: null,
+			job: false,
+			cls,
+			at: 1_700_000_000_000,
+			title: null,
+		});
+		for (let id = 1; id <= 501; id += 1) db.insertItem(row(id, "local-only"), "local");
+		db.insertItem(row(502, "normal"), "text");
+		const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
+		await embedPending(
+			db,
+			{ local: false, embed },
+			createSqliteVectorIndex(db),
+			async () => entry("text"),
+			500,
+		);
+		expect(embed).toHaveBeenCalledWith(["text"]);
+		db.close();
+	});
 	it("a local-only item is not embedded by a non-local embedder", async () => {
 		const db = RecallDb.open(":memory:");
 		db.setTaint(1, 1);

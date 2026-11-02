@@ -67,12 +67,10 @@ export async function embedPending(
 	limit = 500,
 ): Promise<void> {
 	const candidates = [];
-	for (const item of db.listUnembeddedItems(limit)) {
+	for (const item of db.listUnembeddedItems(limit, embedder.local)) {
 		if (
-			item.kind === "artifact" ||
 			item.entryId === null ||
-			item.messageIndex === null ||
-			(item.cls === "local-only" && !embedder.local)
+			item.messageIndex === null
 		) {
 			continue;
 		}

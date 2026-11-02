@@ -49,11 +49,9 @@ function cosine(left, right) {
 /** Embed up to `limit` unembedded conversation passages from their source entries. */
 export async function embedPending(db, embedder, index, entry, limit = 500) {
     const candidates = [];
-    for (const item of db.listUnembeddedItems(limit)) {
-        if (item.kind === "artifact" ||
-            item.entryId === null ||
-            item.messageIndex === null ||
-            (item.cls === "local-only" && !embedder.local)) {
+    for (const item of db.listUnembeddedItems(limit, embedder.local)) {
+        if (item.entryId === null ||
+            item.messageIndex === null) {
             continue;
         }
         const record = await entry(item.conversationId, item.entryId);

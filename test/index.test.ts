@@ -23,6 +23,9 @@ describe("createRecall", () => {
 			expect.objectContaining({ name: "backfill", schedule: { cron: "*/10 * * * *" } }),
 		]);
 		expect(result.extension?.tools?.map((tool) => tool.name)).toEqual(["recall_search", "recall_open"]);
+		expect(result.extension?.tasks?.map((task) => task.definition.name)).toEqual([
+			"recall.backfill",
+		]);
 		expect(result.extension?.hooks).toHaveLength(2);
 		expect(result.routes?.map((route) => `${route.method} ${route.path}`)).toEqual([
 			"GET search",

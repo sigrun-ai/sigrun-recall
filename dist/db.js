@@ -214,12 +214,14 @@ export class RecallDb {
             .prepare("INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
             .run(key, value);
     }
-    listUnembeddedItems(limit) {
+    listUnembeddedItems(limit, includeLocalOnly) {
         // SAFETY: the LEFT JOIN projects the typed items schema only.
         const rows = this.db
             .prepare(`SELECT items.* FROM items LEFT JOIN vectors ON vectors.itemId = items.id
-				 WHERE vectors.itemId IS NULL ORDER BY items.id LIMIT ?`)
-            .all(limit);
+				 WHERE vectors.itemId IS NULL AND items.kind IN ('turn', 'tool')
+				 AND items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL
+				 AND (? OR items.cls != 'local-only') ORDER BY items.id LIMIT ?`)
+            .all(includeLocalOnly ? 1 : 0, limit);
         return rows.map((row) => ({ ...row, job: row.job === 1 }));
     }
     cursor(conversationId) {

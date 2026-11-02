@@ -307,14 +307,16 @@ export class RecallDb {
 			.run(key, value);
 	}
 
-	listUnembeddedItems(limit: number): ItemRow[] {
+	listUnembeddedItems(limit: number, includeLocalOnly: boolean): ItemRow[] {
 		// SAFETY: the LEFT JOIN projects the typed items schema only.
 		const rows = this.db
 			.prepare(
 				`SELECT items.* FROM items LEFT JOIN vectors ON vectors.itemId = items.id
-				 WHERE vectors.itemId IS NULL ORDER BY items.id LIMIT ?`,
+				 WHERE vectors.itemId IS NULL AND items.kind IN ('turn', 'tool')
+				 AND items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL
+				 AND (? OR items.cls != 'local-only') ORDER BY items.id LIMIT ?`,
 			)
-			.all(limit) as unknown as StoredItemRow[];
+			.all(includeLocalOnly ? 1 : 0, limit) as unknown as StoredItemRow[];
 		return rows.map((row) => ({ ...row, job: row.job === 1 }));
 	}
 
