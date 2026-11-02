@@ -24,16 +24,21 @@ export default function createRecall(host, deps = {}) {
         if (settings.embedding === undefined)
             return {};
         embedder ??= createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"));
-        return { embedder, index: createSqliteVectorIndex(db()) };
+        return {
+            embedder,
+            index: createSqliteVectorIndex(db()),
+            timeoutMs: settings.embedding.timeoutMs,
+        };
     }
     // Task 8/10 consumes this accessor when constructing the Searcher.
     async function vectors() {
         const semanticDeps = await semantic();
-        if (semanticDeps.embedder === undefined || semanticDeps.index === undefined) {
+        if (semanticDeps.embedder === undefined ||
+            semanticDeps.index === undefined ||
+            semanticDeps.timeoutMs === undefined) {
             return undefined;
         }
-        const timeoutMs = (await resolveSettings(host.stores.settings)).embedding.timeoutMs;
-        return createVectorArm(semanticDeps.embedder, semanticDeps.index, timeoutMs);
+        return createVectorArm(semanticDeps.embedder, semanticDeps.index, semanticDeps.timeoutMs);
     }
     void vectors;
     return {

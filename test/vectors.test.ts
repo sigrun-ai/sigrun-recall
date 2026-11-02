@@ -58,6 +58,30 @@ describe("vectors", () => {
 		db.close();
 	});
 
+	it("capture-time embedding sends redacted text to the embedder", async () => {
+		const db = RecallDb.open(":memory:");
+		const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
+		const embedder: Embedder = { local: false, embed };
+		await captureConversation(
+			{
+				db,
+				meta: async () => meta(),
+				now: () => 1_700_000_000_000,
+				embedder,
+				index: createSqliteVectorIndex(db),
+			},
+			1,
+			async () => ({
+				items: [entry("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456")],
+			}),
+		);
+		await vi.waitFor(() => expect(embed).toHaveBeenCalledOnce());
+		const texts = embed.mock.calls[0]?.[0] ?? [];
+		expect(texts).toEqual(["Authorization: [redacted:bearer]"]);
+		expect(texts[0]).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+		db.close();
+	});
+
 	it('with a vector arm, a hit with no lexical overlap ("dog surgery" vs "canine knee operation") is found', async () => {
 		const db = RecallDb.open(":memory:");
 		const record = entry("canine knee operation");

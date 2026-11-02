@@ -70,7 +70,7 @@ export async function captureConversation(
 					indexed += 1;
 					insertedForEmbedding.push({
 						id: inserted,
-						text: passage.text,
+						text: redact(passage.text),
 						localOnly: taintFrom !== undefined && passage.entryId >= taintFrom,
 					});
 				}

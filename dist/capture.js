@@ -40,7 +40,7 @@ export async function captureConversation(deps, conversationId, read) {
                     indexed += 1;
                     insertedForEmbedding.push({
                         id: inserted,
-                        text: passage.text,
+                        text: redact(passage.text),
                         localOnly: taintFrom !== undefined && passage.entryId >= taintFrom,
                     });
                 }
