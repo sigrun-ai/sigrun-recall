@@ -23,7 +23,14 @@ export declare class RecallDb {
     static open(path: string): RecallDb;
     private migrate;
     insertItem(row: Omit<ItemRow, "id">, text: string): number | undefined;
+    putArtifact(hash: string, bytes: number, meta: {
+        title?: string;
+        url?: string;
+        createdAt: number;
+    }): void;
     item(id: number): ItemRow | undefined;
+    /** Indexed text for one item from the porter FTS table. */
+    itemText(id: number): string | undefined;
     /** Item ids matching a trigram FTS5 expression, in match order. */
     matchTrigram(expression: string): number[];
     cursor(conversationId: number): number | undefined;

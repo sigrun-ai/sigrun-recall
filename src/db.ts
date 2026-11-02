@@ -186,11 +186,32 @@ export class RecallDb {
 		}
 	}
 
+	putArtifact(
+		hash: string,
+		bytes: number,
+		meta: { title?: string; url?: string; createdAt: number },
+	): void {
+		this.db
+			.prepare(
+				`INSERT INTO artifacts (hash, bytes, title, url, createdAt)
+				 VALUES (?, ?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING`,
+			)
+			.run(hash, bytes, meta.title ?? null, meta.url ?? null, meta.createdAt);
+	}
+
 	item(id: number): ItemRow | undefined {
 		const row = this.db.prepare("SELECT * FROM items WHERE id = ?").get(id) as
 			| StoredItemRow
 			| undefined;
 		return row === undefined ? undefined : { ...row, job: row.job === 1 };
+	}
+
+	/** Indexed text for one item from the porter FTS table. */
+	itemText(id: number): string | undefined {
+		const row = this.db
+			.prepare("SELECT text FROM fts_porter WHERE rowid = ?")
+			.get(id) as { text: string } | undefined;
+		return row?.text;
 	}
 
 	/** Item ids matching a trigram FTS5 expression, in match order. */

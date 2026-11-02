@@ -1,6 +1,8 @@
 import { join } from "node:path";
-import { defineExtension, } from "@earendil-works/pi-durable";
+import { defineExtension, hook, ToolTask, } from "@earendil-works/pi-durable";
+import { createArtifactStore, externalize } from "./artifacts.js";
 import { captureConversation } from "./capture.js";
+import { resolveSettings } from "./config.js";
 import { RecallDb } from "./db.js";
 /**
  * The loader injects the host only when factory.length > 0: keep the host
@@ -15,7 +17,32 @@ export default function createRecall(host, deps = {}) {
         return database;
     }
     return {
-        extension: defineExtension({ name: "@sigrun/recall" }),
+        extension: defineExtension({
+            name: "@sigrun/recall",
+            hooks: [
+                hook(ToolTask, {
+                    afterTool: async (call, result, api) => {
+                        try {
+                            const meta = await host.conversations.meta(api.conversationId);
+                            if (meta.internal === true)
+                                return undefined;
+                            const settings = await resolveSettings(host.stores.settings);
+                            return externalize(result, call, {
+                                store: createArtifactStore(db(), join(host.stores.paths.data, "artifacts")),
+                                thresholdBytes: settings.externalizeBytes,
+                                conversationId: api.conversationId,
+                                owner: meta.owner ?? null,
+                                now: (deps.now ?? Date.now)(),
+                            });
+                        }
+                        catch (error) {
+                            console.error("recall: tool-result externalization failed", error);
+                            return undefined;
+                        }
+                    },
+                }),
+            ],
+        }),
         runSettled: async (event, api, context) => {
             try {
                 await captureConversation({
