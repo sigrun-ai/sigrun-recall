@@ -26,10 +26,9 @@ export interface ArtifactStore {
 
 /** Store whole tool results by content hash and index their searchable text. */
 export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
-	const hashes = new Map<string, string>();
-
 	function pathForHandle(handle: string): string | undefined {
-		const hash = hashes.get(handle);
+		if (!/^a:[0-9a-f]{16}$/.test(handle)) return undefined;
+		const hash = db.artifactHash(handle);
 		return hash === undefined ? undefined : join(dir, `${hash}.txt`);
 	}
 
@@ -37,7 +36,6 @@ export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
 		put(text, meta) {
 			const hash = createHash("sha256").update(text).digest("hex");
 			const handle = `a:${hash.slice(0, 16)}`;
-			hashes.set(handle, hash);
 			const path = join(dir, `${hash}.txt`);
 			if (!existsSync(path)) {
 				mkdirSync(dir, { recursive: true });
@@ -51,8 +49,10 @@ export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
 				createdAt: meta.at,
 			});
 
-			for (let offset = 0; offset < text.length; offset += ARTIFACT_PASSAGE_SIZE) {
-				const passage = text.slice(offset, offset + ARTIFACT_PASSAGE_SIZE);
+			const buffer = Buffer.from(text, "utf8");
+			for (let offset = 0; offset < buffer.length; offset += ARTIFACT_PASSAGE_SIZE) {
+				const bytes = buffer.subarray(offset, offset + ARTIFACT_PASSAGE_SIZE);
+				const passage = bytes.toString("utf8");
 				db.insertItem(
 					{
 						conversationId: meta.conversationId,
@@ -60,8 +60,9 @@ export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
 						kind: "artifact",
 						entryId: null,
 						messageIndex: null,
+						blockIndex: 0,
 						offset,
-						length: passage.length,
+						length: bytes.length,
 						artifact: handle,
 						job: false,
 						cls: "normal",
@@ -76,7 +77,12 @@ export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
 		read(handle, offset, length) {
 			const path = pathForHandle(handle);
 			if (path === undefined || !existsSync(path)) return undefined;
-			return readFileSync(path).subarray(offset, offset + length).toString("utf8");
+			const buffer = readFileSync(path);
+			let start = Math.min(offset, buffer.length);
+			let end = Math.min(offset + length, buffer.length);
+			while (start > 0 && start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start -= 1;
+			while (end > start && end < buffer.length && (buffer[end]! & 0xc0) === 0x80) end -= 1;
+			return buffer.subarray(start, end).toString("utf8");
 		},
 	};
 }
@@ -92,7 +98,7 @@ export function outline(text: string): { title: string; offset: number }[] {
 	}
 	if (headings.length > 0) return headings;
 	const parts: { title: string; offset: number }[] = [];
-	for (let offset = 0; offset < text.length; offset += SYNTHETIC_OUTLINE_SIZE) {
+	for (let offset = 0; offset < Buffer.byteLength(text); offset += SYNTHETIC_OUTLINE_SIZE) {
 		parts.push({ title: `part ${parts.length + 1}`, offset });
 	}
 	return parts;

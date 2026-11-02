@@ -13,6 +13,7 @@ import type { ArtifactStore } from "./artifacts.js";
 import { audienceCovers } from "./audience.js";
 import type { ItemRow, RecallDb } from "./db.js";
 import { mayRead } from "./policy.js";
+import { redact } from "./redact.js";
 import type { Hit, Searcher } from "./search.js";
 
 const OPEN_LIMIT = 16_384;
@@ -79,7 +80,7 @@ function renderEntries(entries: readonly EntryRecord[]): string {
 							.filter((part) => part.type === "text")
 							.map((part) => part.text)
 							.join("\n");
-			if (text !== "") lines.push(`${message.role}: ${text}`);
+			if (text !== "") lines.push(`${message.role}: ${redact(text)}`);
 		}
 	}
 	let bytes = 0;
@@ -196,6 +197,16 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 				)
 				.catch(() => undefined);
 			if (page === undefined) return output("Not available here.");
+			const nearby = deps.db.itemsForEntries(
+				item.conversationId,
+				page.items.map((entry) => entry.id),
+			);
+			for (const candidate of nearby) {
+				if ((await permitted(deps, current, candidate, provider)) === undefined) {
+					return output("Not available here.");
+				}
+			}
+			for (const candidate of nearby) taint(deps.db, conversationId, candidate);
 			const text = renderEntries(page.items);
 			return output(text === "" ? "Not available here." : text);
 		},

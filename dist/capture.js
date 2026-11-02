@@ -26,6 +26,7 @@ export async function captureConversation(deps, conversationId, read) {
                     kind: passage.kind,
                     entryId: passage.entryId,
                     messageIndex: passage.messageIndex,
+                    blockIndex: passage.blockIndex,
                     offset: passage.offset,
                     length: passage.length,
                     artifact: null,
@@ -47,7 +48,11 @@ export async function captureConversation(deps, conversationId, read) {
             }
         }
         if (deps.embedder !== undefined && deps.index !== undefined) {
-            void embedPage(deps.embedder, deps.index, insertedForEmbedding);
+            const work = embedPage(deps.embedder, deps.index, insertedForEmbedding);
+            if (deps.trackEmbedding === undefined)
+                void work;
+            else
+                deps.trackEmbedding(work);
         }
         const lastEntry = page.items.at(-1);
         if (lastEntry !== undefined)

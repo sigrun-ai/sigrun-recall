@@ -2,6 +2,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 export interface Passage {
     entryId: number;
     messageIndex: number;
+    blockIndex: number;
     kind: "turn" | "tool";
     offset: number;
     length: number;

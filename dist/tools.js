@@ -2,6 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
 import { audienceCovers } from "./audience.js";
 import { mayRead } from "./policy.js";
+import { redact } from "./redact.js";
 const OPEN_LIMIT = 16_384;
 function output(text) {
     return { output: [{ type: "text", text }] };
@@ -44,7 +45,7 @@ function renderEntries(entries) {
                     .map((part) => part.text)
                     .join("\n");
             if (text !== "")
-                lines.push(`${message.role}: ${text}`);
+                lines.push(`${message.role}: ${redact(text)}`);
         }
     }
     let bytes = 0;
@@ -150,6 +151,14 @@ export function createTools(deps) {
                 .catch(() => undefined);
             if (page === undefined)
                 return output("Not available here.");
+            const nearby = deps.db.itemsForEntries(item.conversationId, page.items.map((entry) => entry.id));
+            for (const candidate of nearby) {
+                if ((await permitted(deps, current, candidate, provider)) === undefined) {
+                    return output("Not available here.");
+                }
+            }
+            for (const candidate of nearby)
+                taint(deps.db, conversationId, candidate);
             const text = renderEntries(page.items);
             return output(text === "" ? "Not available here." : text);
         },

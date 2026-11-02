@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 
+import { audienceCovers } from "./audience.js";
 import type { RecallDb } from "./db.js";
 import { mayRead } from "./policy.js";
 import type { Hit, Searcher } from "./search.js";
@@ -19,6 +20,9 @@ export interface InjectDeps {
 	autoRecall: boolean;
 	internal: boolean;
 	ownerLocalProviders: readonly string[];
+	/** Live source policy readers; missing readers fail closed for sourced blocks. */
+	sourceMeta?: (conversationId: number) => Promise<SessionMeta>;
+	sourceLocalProviders?: (user: string) => Promise<readonly string[]>;
 }
 
 function textOf(message: UserMessage): string {
@@ -86,9 +90,40 @@ export async function applyRecall(
 			);
 			const cls = hits.some((hit) => hit.item.cls === "local-only") ? "local-only" : "normal";
 			const block = renderBlock(hits);
-			deps.db.putInjection(deps.conversationId, key, block, cls);
-			stored.set(key, { block, cls });
+			const sources = hits.map((hit) => hit.item.id);
+			deps.db.putInjection(deps.conversationId, key, block, cls, sources);
+			stored.set(key, { block, cls, sources });
 		}
+	}
+
+	const readable = new Map<string, boolean>();
+	for (const [key, injection] of stored) {
+		let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.ownerLocalProviders);
+		for (const itemId of injection.sources) {
+			const item = deps.db.item(itemId);
+			if (
+				item === undefined ||
+				deps.sourceMeta === undefined ||
+				deps.sourceLocalProviders === undefined
+			) {
+				allowed = false;
+				break;
+			}
+			const source = await deps.sourceMeta(item.conversationId).catch(() => undefined);
+			const providers = item.owner === null
+				? []
+				: await deps.sourceLocalProviders(item.owner).catch(() => []);
+			if (
+				source === undefined ||
+				source.internal === true ||
+				!audienceCovers(deps.meta, source) ||
+				!mayRead(item.cls, deps.model, providers)
+			) {
+				allowed = false;
+				break;
+			}
+		}
+		readable.set(key, allowed);
 	}
 
 	let changed = false;
@@ -99,8 +134,7 @@ export async function applyRecall(
 		if (
 			injection === undefined ||
 			injection.block === "" ||
-			(injection.cls === "local-only" &&
-				!mayRead(injection.cls, deps.model, deps.ownerLocalProviders))
+			readable.get(messageKey(message)) !== true
 		) {
 			return message;
 		}

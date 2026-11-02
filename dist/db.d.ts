@@ -7,6 +7,7 @@ export interface ItemRow {
     kind: ItemKind;
     entryId: number | null;
     messageIndex: number | null;
+    blockIndex: number;
     offset: number;
     length: number;
     artifact: string | null;
@@ -29,7 +30,9 @@ export declare class RecallDb {
         createdAt: number;
     }): void;
     item(id: number): ItemRow | undefined;
-    itemByPassage(conversationId: number, entryId: number, messageIndex: number, offset: number): ItemRow | undefined;
+    itemByPassage(conversationId: number, entryId: number, messageIndex: number, blockIndex: number, offset: number): ItemRow | undefined;
+    itemsForEntries(conversationId: number, entryIds: readonly number[]): ItemRow[];
+    artifactHash(handle: string): string | undefined;
     itemByArtifact(handle: string): ItemRow | undefined;
     searchPorter(query: string, limit: number): {
         id: number;
@@ -58,10 +61,11 @@ export declare class RecallDb {
     setTaint(conversationId: number, entryId: number): void;
     private entryId;
     private setEntryId;
-    putInjection(conversationId: number, messageKey: string, block: string, cls: Confidentiality): void;
+    putInjection(conversationId: number, messageKey: string, block: string, cls: Confidentiality, sources?: readonly number[]): void;
     injections(conversationId: number): ReadonlyMap<string, {
         block: string;
         cls: Confidentiality;
+        sources: number[];
     }>;
     close(): void;
 }

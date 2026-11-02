@@ -9,6 +9,7 @@ const SCHEMA = `
 		kind TEXT NOT NULL CHECK (kind IN ('turn', 'tool', 'artifact')),
 		entryId INTEGER,
 		messageIndex INTEGER,
+		blockIndex INTEGER NOT NULL DEFAULT 0,
 		offset INTEGER NOT NULL,
 		length INTEGER NOT NULL,
 		artifact TEXT,
@@ -18,7 +19,7 @@ const SCHEMA = `
 		title TEXT
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS items_message_key
-		ON items (conversationId, kind, entryId, messageIndex, offset)
+		ON items (conversationId, kind, entryId, messageIndex, blockIndex, offset)
 		WHERE kind IN ('turn', 'tool');
 	CREATE UNIQUE INDEX IF NOT EXISTS items_artifact_key
 		ON items (artifact, offset)
@@ -47,6 +48,7 @@ const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS injections (
 		conversationId INTEGER NOT NULL,
 		messageKey TEXT NOT NULL,
+		sources TEXT NOT NULL DEFAULT '[]',
 		block TEXT NOT NULL,
 		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
 		PRIMARY KEY (conversationId, messageKey)
@@ -91,14 +93,22 @@ export class RecallDb {
             const current = this.db
                 .prepare("SELECT version FROM schema_version")
                 .get();
-            if (current === undefined || current.version < 1) {
+            if (current === undefined) {
                 this.db.exec(SCHEMA);
-                if (current === undefined) {
-                    this.db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+                this.db.prepare("INSERT INTO schema_version (version) VALUES (2)").run();
+            }
+            else if (current.version < 2) {
+                const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
+                if (!itemColumns.some(({ name }) => name === "blockIndex")) {
+                    this.db.exec("ALTER TABLE items ADD COLUMN blockIndex INTEGER NOT NULL DEFAULT 0");
                 }
-                else {
-                    this.db.prepare("UPDATE schema_version SET version = 1").run();
+                const injectionColumns = this.db.prepare("PRAGMA table_info(injections)").all();
+                if (!injectionColumns.some(({ name }) => name === "sources")) {
+                    this.db.exec("ALTER TABLE injections ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'");
                 }
+                this.db.exec("DROP INDEX items_message_key");
+                this.db.exec(SCHEMA);
+                this.db.prepare("UPDATE schema_version SET version = 2").run();
             }
             this.db.exec("COMMIT");
         }
@@ -112,15 +122,16 @@ export class RecallDb {
         try {
             const inserted = this.db
                 .prepare(`INSERT INTO items (
-						conversationId, owner, kind, entryId, messageIndex, offset,
-						length, artifact, job, cls, at, title
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-					ON CONFLICT(conversationId, kind, entryId, messageIndex, offset)
+					conversationId, owner, kind, entryId, messageIndex, blockIndex, offset,
+					length, artifact, job, cls, at, title
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+					ON CONFLICT(conversationId, kind, entryId, messageIndex, blockIndex, offset)
 						WHERE kind IN ('turn', 'tool') DO NOTHING
 					ON CONFLICT(artifact, offset)
 						WHERE kind = 'artifact' DO NOTHING
 					RETURNING id`)
-                .get(row.conversationId, row.owner, row.kind, row.entryId, row.messageIndex, row.offset, row.length, row.artifact, row.job ? 1 : 0, row.cls, row.at, row.title);
+                .get(row.conversationId, row.owner, row.kind, row.entryId, row.messageIndex, row.blockIndex, row.offset, row.length, row.artifact, row.job ? 1 : 0, row.cls, row.at, row.title);
             if (inserted === undefined) {
                 this.db.exec("COMMIT");
                 return undefined;
@@ -149,12 +160,28 @@ export class RecallDb {
         const row = this.db.prepare("SELECT * FROM items WHERE id = ?").get(id);
         return row === undefined ? undefined : { ...row, job: row.job === 1 };
     }
-    itemByPassage(conversationId, entryId, messageIndex, offset) {
+    itemByPassage(conversationId, entryId, messageIndex, blockIndex, offset) {
         const row = this.db
             .prepare(`SELECT * FROM items WHERE conversationId = ? AND entryId = ?
-				 AND messageIndex = ? AND offset = ? AND kind IN ('turn', 'tool')`)
-            .get(conversationId, entryId, messageIndex, offset);
+				 AND messageIndex = ? AND blockIndex = ? AND offset = ? AND kind IN ('turn', 'tool')`)
+            .get(conversationId, entryId, messageIndex, blockIndex, offset);
         return row === undefined ? undefined : { ...row, job: row.job === 1 };
+    }
+    itemsForEntries(conversationId, entryIds) {
+        if (entryIds.length === 0)
+            return [];
+        const placeholders = entryIds.map(() => "?").join(",");
+        // SAFETY: placeholders are generated from array length; values are bound.
+        const rows = this.db
+            .prepare(`SELECT * FROM items WHERE conversationId = ? AND entryId IN (${placeholders})`)
+            .all(conversationId, ...entryIds);
+        return rows.map((row) => ({ ...row, job: row.job === 1 }));
+    }
+    artifactHash(handle) {
+        const row = this.db
+            .prepare("SELECT hash FROM artifacts WHERE substr(hash, 1, 16) = ?")
+            .get(handle.slice(2));
+        return row?.hash;
     }
     itemByArtifact(handle) {
         const row = this.db
@@ -253,19 +280,25 @@ export class RecallDb {
 				ON CONFLICT(conversationId) DO UPDATE SET entryId = excluded.entryId`)
             .run(conversationId, entryId);
     }
-    putInjection(conversationId, messageKey, block, cls) {
+    putInjection(conversationId, messageKey, block, cls, sources = []) {
         this.db
-            .prepare(`INSERT INTO injections (conversationId, messageKey, block, cls) VALUES (?, ?, ?, ?)
+            .prepare(`INSERT INTO injections (conversationId, messageKey, block, cls, sources) VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT(conversationId, messageKey) DO UPDATE SET
-					block = excluded.block, cls = excluded.cls`)
-            .run(conversationId, messageKey, block, cls);
+					block = excluded.block, cls = excluded.cls, sources = excluded.sources`)
+            .run(conversationId, messageKey, block, cls, JSON.stringify(sources));
     }
     injections(conversationId) {
         // SAFETY: these rows come from the typed injections schema above.
         const rows = this.db
-            .prepare("SELECT messageKey, block, cls FROM injections WHERE conversationId = ?")
+            .prepare("SELECT messageKey, block, cls, sources FROM injections WHERE conversationId = ?")
             .all(conversationId);
-        return new Map(rows.map((row) => [row.messageKey, { block: row.block, cls: row.cls }]));
+        return new Map(rows.map((row) => {
+            const parsed = JSON.parse(row.sources);
+            const sources = Array.isArray(parsed)
+                ? parsed.filter((id) => Number.isInteger(id) && id > 0)
+                : [];
+            return [row.messageKey, { block: row.block, cls: row.cls, sources }];
+        }));
     }
     close() {
         this.db.close();

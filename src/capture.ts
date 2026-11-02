@@ -16,6 +16,7 @@ export interface CaptureDeps {
 	/** Optional best-effort semantic indexing; capture never awaits embedding. */
 	embedder?: Embedder;
 	index?: VectorIndex;
+	trackEmbedding?: (work: Promise<void>) => void;
 }
 
 export type EntryReader = (
@@ -53,6 +54,7 @@ export async function captureConversation(
 						kind: passage.kind,
 						entryId: passage.entryId,
 						messageIndex: passage.messageIndex,
+						blockIndex: passage.blockIndex,
 						offset: passage.offset,
 						length: passage.length,
 						artifact: null,
@@ -78,7 +80,9 @@ export async function captureConversation(
 		}
 
 		if (deps.embedder !== undefined && deps.index !== undefined) {
-			void embedPage(deps.embedder, deps.index, insertedForEmbedding);
+			const work = embedPage(deps.embedder, deps.index, insertedForEmbedding);
+			if (deps.trackEmbedding === undefined) void work;
+			else deps.trackEmbedding(work);
 		}
 
 		const lastEntry = page.items.at(-1);

@@ -10,6 +10,7 @@ export interface CaptureDeps {
     /** Optional best-effort semantic indexing; capture never awaits embedding. */
     embedder?: Embedder;
     index?: VectorIndex;
+    trackEmbedding?: (work: Promise<void>) => void;
 }
 export type EntryReader = (query: {
     minEntryId?: number;

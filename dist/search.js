@@ -126,6 +126,8 @@ async function sourceText(deps, item, entries) {
     const entry = await entryPromise;
     if (entry === undefined)
         return undefined;
-    const passage = passagesOf(entry).find((candidate) => candidate.messageIndex === item.messageIndex && candidate.offset === item.offset);
+    const passage = passagesOf(entry).find((candidate) => candidate.messageIndex === item.messageIndex &&
+        candidate.blockIndex === item.blockIndex &&
+        candidate.offset === item.offset);
     return passage?.text;
 }

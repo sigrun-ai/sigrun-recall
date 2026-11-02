@@ -6,6 +6,7 @@ const TOOL_ARGUMENT_LIMIT = 300;
 export interface Passage {
 	entryId: number;
 	messageIndex: number;
+	blockIndex: number;
 	kind: "turn" | "tool";
 	offset: number;
 	length: number;
@@ -43,30 +44,33 @@ export function passagesOf(entry: EntryRecord): Passage[] {
 			continue;
 		}
 
-		const texts: { kind: "turn" | "tool"; text: string }[] = [];
+		const texts: { kind: "turn" | "tool"; text: string; blockIndex: number }[] = [];
 		if (typeof message.content === "string") {
-			texts.push({ kind: "turn", text: message.content });
+			texts.push({ kind: "turn", text: message.content, blockIndex: 0 });
 		} else {
-			for (const block of message.content) {
+			for (const [blockIndex, block] of message.content.entries()) {
 				if (block.type === "text") {
 					texts.push({
 						kind: message.role === "toolResult" ? "tool" : "turn",
 						text: message.role === "toolResult" ? block.text.slice(0, PASSAGE_LIMIT) : block.text,
+						blockIndex,
 					});
 				} else if (message.role === "assistant" && block.type === "toolCall") {
 					texts.push({
 						kind: "tool",
 						text: `${block.name} ${JSON.stringify(block.arguments).slice(0, TOOL_ARGUMENT_LIMIT)}`,
+						blockIndex,
 					});
 				}
 			}
 		}
 
-		for (const { kind, text } of texts) {
+		for (const { kind, text, blockIndex } of texts) {
 			for (const passage of splitText(text)) {
 				passages.push({
 					entryId: entry.id,
 					messageIndex,
+					blockIndex,
 					kind,
 					offset: passage.offset,
 					length: passage.text.length,
