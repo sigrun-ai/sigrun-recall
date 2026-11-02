@@ -4,14 +4,21 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-Cross-conversation recall extension for [sigrun](https://github.com/sigrun-ai/sigrun). The default-export factory follows sigrun's pi-durable loader contract. The package keeps its recall index in the extension-scoped SQLite database; later tasks add capture, policy-checked search, and recall surfaces.
+Cross-conversation recall extension for [sigrun](https://github.com/sigrun-ai/sigrun). The default-export factory follows sigrun's pi-durable loader contract. Capture, policy-checked lexical/semantic search, request-only injection, tools, artifacts, backfill, and debug routes share the extension-scoped SQLite database.
 
 ## Layout
 
-- `src/index.ts` — public factory surface.
-- `src/db.ts` — SQLite schema, migrations, and item/index bookkeeping.
-- `src/config.ts` — extension-wide and per-user settings resolution.
-- `test/` — vitest suites.
+- `src/index.ts` — factory and lazy host/service wiring.
+- `src/db.ts` — schema, migrations, FTS/vector queries, and durable sweep/taint/injection state.
+- `src/config.ts` — extension-wide and per-user settings.
+- `src/passages.ts`, `src/redact.ts`, `src/capture.ts` — bounded capture pipeline.
+- `src/artifacts.ts` — whole-result files, indexing, outlines, and externalization.
+- `src/audience.ts`, `src/policy.ts` — pure sharing/confidentiality rules.
+- `src/search.ts`, `src/snippet.ts` — ranked, policy-filtered search.
+- `src/embed.ts`, `src/vectors.ts` — optional embeddings and paged cosine index.
+- `src/tools.ts`, `src/inject.ts` — model-facing tools and request-only auto-recall.
+- `src/backfill.ts`, `src/route.ts` — bounded sweeps and HTTP debug surfaces.
+- `test/` — vitest suites with synthetic users and services.
 - `dist/` — **committed build output** for git-source installs.
 
 ## Run and test
@@ -29,5 +36,6 @@ npm run build       # tsc -> dist/ (commit the result)
 - **Factory arity is one**: declare the host first and optional test dependencies second; a defaulted host parameter breaks loader host injection.
 - **Local development links are not source**: re-point `node_modules/@sigrun/sigrun` and `@sigrun/shared` to the core worktree after `npm install`; never commit those links.
 - **Verification before completion**: run `npm test && npm run typecheck && npm run build` and confirm `git status -- dist` is clean.
+- Keep access and confidentiality checks on live metadata at every recall egress. Redact text before FTS or remote embedding. Request-only injection must never enter durable entries.
 - Tests own their literals: synthetic users, `https://example.invalid/` URLs, no real credentials or services.
 - The database uses Node's built-in `node:sqlite`; do not add a native SQLite addon.

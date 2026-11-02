@@ -1,3 +1,5 @@
+import { passagesOf } from "./passages.js";
+import { redact } from "./redact.js";
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
 export function createSqliteVectorIndex(db, pageSize = 2000) {
     return {
@@ -43,6 +45,38 @@ function cosine(left, right) {
     if (leftNorm === 0 || rightNorm === 0)
         return 0;
     return dot / Math.sqrt(leftNorm * rightNorm);
+}
+/** Embed up to `limit` unembedded conversation passages from their source entries. */
+export async function embedPending(db, embedder, index, entry, limit = 500) {
+    const candidates = [];
+    for (const item of db.listUnembeddedItems(limit)) {
+        if (item.kind === "artifact" ||
+            item.entryId === null ||
+            item.messageIndex === null ||
+            (item.cls === "local-only" && !embedder.local)) {
+            continue;
+        }
+        const record = await entry(item.conversationId, item.entryId);
+        if (record === undefined)
+            continue;
+        const passage = passagesOf(record).find((candidate) => candidate.messageIndex === item.messageIndex && candidate.offset === item.offset);
+        if (passage !== undefined)
+            candidates.push({ id: item.id, text: redact(passage.text) });
+    }
+    for (let offset = 0; offset < candidates.length; offset += 64) {
+        const batch = candidates.slice(offset, offset + 64);
+        try {
+            const vectors = await embedder.embed(batch.map(({ text }) => text));
+            for (const [position, vector] of vectors.entries()) {
+                const candidate = batch[position];
+                if (candidate !== undefined)
+                    index.upsert(candidate.id, vector);
+            }
+        }
+        catch (error) {
+            console.error("recall: pending passage embedding failed", error);
+        }
+    }
 }
 /** Add a semantic arm that degrades to lexical search on embedding failure. */
 export function createVectorArm(embedder, index, timeoutMs) {

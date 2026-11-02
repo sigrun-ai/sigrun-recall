@@ -93,6 +93,10 @@ const SCHEMA = `
 		dim INTEGER NOT NULL,
 		vec BLOB NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS state (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);
 	CREATE TABLE IF NOT EXISTS schema_version (
 		version INTEGER NOT NULL
 	);
@@ -286,6 +290,32 @@ export class RecallDb {
 				"SELECT itemId, vec FROM vectors WHERE itemId > ? ORDER BY itemId LIMIT ?",
 			)
 			.all(after, limit) as unknown as { itemId: number; vec: Buffer }[];
+	}
+
+	state(key: string): string | undefined {
+		const row = this.db.prepare("SELECT value FROM state WHERE key = ?").get(key) as
+			| { value: string }
+			| undefined;
+		return row?.value;
+	}
+
+	setState(key: string, value: string): void {
+		this.db
+			.prepare(
+				"INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+			)
+			.run(key, value);
+	}
+
+	listUnembeddedItems(limit: number): ItemRow[] {
+		// SAFETY: the LEFT JOIN projects the typed items schema only.
+		const rows = this.db
+			.prepare(
+				`SELECT items.* FROM items LEFT JOIN vectors ON vectors.itemId = items.id
+				 WHERE vectors.itemId IS NULL ORDER BY items.id LIMIT ?`,
+			)
+			.all(limit) as unknown as StoredItemRow[];
+		return rows.map((row) => ({ ...row, job: row.job === 1 }));
 	}
 
 	cursor(conversationId: number): number | undefined {

@@ -49,6 +49,9 @@ export declare class RecallDb {
         itemId: number;
         vec: Buffer;
     }[];
+    state(key: string): string | undefined;
+    setState(key: string, value: string): void;
+    listUnembeddedItems(limit: number): ItemRow[];
     cursor(conversationId: number): number | undefined;
     setCursor(conversationId: number, entryId: number): void;
     taintFrom(conversationId: number): number | undefined;

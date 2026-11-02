@@ -1,14 +1,16 @@
 import { join } from "node:path";
 import { AgentDoc, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
 import { createArtifactStore, externalize } from "./artifacts.js";
+import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
 import { resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
 import { createSearcher } from "./search.js";
+import { createRoutes } from "./route.js";
 import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
 import { applyRecall } from "./inject.js";
-import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
+import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vectors.js";
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
@@ -58,6 +60,19 @@ export default function createRecall(host, deps = {}) {
     const localProviders = async (user) => (await userSettings(user)).localProviders;
     const toolDb = db();
     const toolArtifactStore = artifactStore();
+    const pendingVectors = async () => {
+        const semanticDeps = await semantic();
+        if (semanticDeps.embedder !== undefined && semanticDeps.index !== undefined) {
+            await embedPending(db(), semanticDeps.embedder, semanticDeps.index, entry, 500);
+        }
+    };
+    const backfillDeps = {
+        host,
+        capture: captureConversation,
+        db: toolDb,
+        vectors: pendingVectors,
+        now: deps.now ?? Date.now,
+    };
     const searcher = createSearcher({
         db: toolDb,
         meta,
@@ -137,7 +152,16 @@ export default function createRecall(host, deps = {}) {
                 }, limit, cursor),
                 localProviders,
             }),
+            tasks: [createBackfillTask(backfillDeps)],
         }),
+        jobs: [
+            {
+                name: "backfill",
+                schedule: { cron: "*/10 * * * *" },
+                action: { kind: "task", task: BACKFILL_TASK_NAME },
+            },
+        ],
+        routes: createRoutes({ searcher, sweep: () => runSweep(backfillDeps) }),
         runSettled: async (event, api, context) => {
             try {
                 const semanticDeps = await semantic();
