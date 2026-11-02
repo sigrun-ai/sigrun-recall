@@ -1,7 +1,9 @@
 import { join } from "node:path";
 
 import {
+	AgentDoc,
 	defineExtension,
+	GenerationTask,
 	hook,
 	ToolTask,
 	type ConversationId,
@@ -16,6 +18,7 @@ import { RecallDb } from "./db.js";
 import { createSearcher } from "./search.js";
 import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
+import { applyRecall } from "./inject.js";
 import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
 
 export interface FactoryDeps {
@@ -79,15 +82,30 @@ export default function createRecall(
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
-	const localProviders = async (user: string) => {
+	const userSettings = async (user: string) => {
 		try {
-			return (await resolveUserSettings(host.stores.user(user).settings)).localProviders;
+			return await resolveUserSettings(host.stores.user(user).settings);
 		} catch {
-			return [];
+			return { autoRecall: true, localProviders: [] };
 		}
 	};
+	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
 	const toolDb = db();
 	const toolArtifactStore = artifactStore();
+	const searcher = createSearcher({
+		db: toolDb,
+		meta,
+		entry,
+		userSettings: async (user) => {
+			try {
+				return await resolveUserSettings(host.stores.user(user).settings);
+			} catch {
+				return { autoRecall: true, localProviders: [] };
+			}
+		},
+		artifactStore: toolArtifactStore,
+		now: deps.now ?? Date.now,
+	});
 
 	return {
 		extension: defineExtension({
@@ -112,23 +130,36 @@ export default function createRecall(
 						}
 					},
 				}),
+				hook(GenerationTask, {
+					beforeRequest: async (request, api, context) => {
+						try {
+							const meta = await host.conversations.meta(api.conversationId);
+							const settings =
+								meta.owner === undefined
+									? { autoRecall: true, localProviders: [] }
+								: await userSettings(meta.owner);
+							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+							const messages = await applyRecall(request.messages, {
+								conversationId: api.conversationId,
+								db: db(),
+								searcher,
+								meta,
+								model: agent?.model,
+								autoRecall: settings.autoRecall,
+								internal: meta.internal === true,
+								ownerLocalProviders: settings.localProviders,
+							});
+							return messages === undefined ? undefined : { messages };
+						} catch (error) {
+							console.error("recall: automatic recall failed", error);
+							return undefined;
+						}
+					},
+				}),
 			],
 			tools: createTools({
 				db: toolDb,
-				searcher: createSearcher({
-					db: toolDb,
-					meta,
-					entry,
-					userSettings: async (user) => {
-						try {
-							return await resolveUserSettings(host.stores.user(user).settings);
-						} catch {
-							return { autoRecall: true, localProviders: [] };
-						}
-					},
-					artifactStore: toolArtifactStore,
-					now: deps.now ?? Date.now,
-				}),
+				searcher,
 				artifactStore: toolArtifactStore,
 				meta,
 				entries: (conversationId, query, limit, cursor) =>

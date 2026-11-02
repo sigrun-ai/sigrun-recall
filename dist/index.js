@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { defineExtension, hook, ToolTask, } from "@earendil-works/pi-durable";
+import { AgentDoc, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { captureConversation } from "./capture.js";
 import { resolveSettings, resolveUserSettings } from "./config.js";
@@ -7,6 +7,7 @@ import { RecallDb } from "./db.js";
 import { createSearcher } from "./search.js";
 import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
+import { applyRecall } from "./inject.js";
 import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
 /**
  * The loader injects the host only when factory.length > 0: keep the host
@@ -46,16 +47,32 @@ export default function createRecall(host, deps = {}) {
     const artifactStore = () => createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
-    const localProviders = async (user) => {
+    const userSettings = async (user) => {
         try {
-            return (await resolveUserSettings(host.stores.user(user).settings)).localProviders;
+            return await resolveUserSettings(host.stores.user(user).settings);
         }
         catch {
-            return [];
+            return { autoRecall: true, localProviders: [] };
         }
     };
+    const localProviders = async (user) => (await userSettings(user)).localProviders;
     const toolDb = db();
     const toolArtifactStore = artifactStore();
+    const searcher = createSearcher({
+        db: toolDb,
+        meta,
+        entry,
+        userSettings: async (user) => {
+            try {
+                return await resolveUserSettings(host.stores.user(user).settings);
+            }
+            catch {
+                return { autoRecall: true, localProviders: [] };
+            }
+        },
+        artifactStore: toolArtifactStore,
+        now: deps.now ?? Date.now,
+    });
     return {
         extension: defineExtension({
             name: "@sigrun/recall",
@@ -81,24 +98,36 @@ export default function createRecall(host, deps = {}) {
                         }
                     },
                 }),
+                hook(GenerationTask, {
+                    beforeRequest: async (request, api, context) => {
+                        try {
+                            const meta = await host.conversations.meta(api.conversationId);
+                            const settings = meta.owner === undefined
+                                ? { autoRecall: true, localProviders: [] }
+                                : await userSettings(meta.owner);
+                            const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+                            const messages = await applyRecall(request.messages, {
+                                conversationId: api.conversationId,
+                                db: db(),
+                                searcher,
+                                meta,
+                                model: agent?.model,
+                                autoRecall: settings.autoRecall,
+                                internal: meta.internal === true,
+                                ownerLocalProviders: settings.localProviders,
+                            });
+                            return messages === undefined ? undefined : { messages };
+                        }
+                        catch (error) {
+                            console.error("recall: automatic recall failed", error);
+                            return undefined;
+                        }
+                    },
+                }),
             ],
             tools: createTools({
                 db: toolDb,
-                searcher: createSearcher({
-                    db: toolDb,
-                    meta,
-                    entry,
-                    userSettings: async (user) => {
-                        try {
-                            return await resolveUserSettings(host.stores.user(user).settings);
-                        }
-                        catch {
-                            return { autoRecall: true, localProviders: [] };
-                        }
-                    },
-                    artifactStore: toolArtifactStore,
-                    now: deps.now ?? Date.now,
-                }),
+                searcher,
                 artifactStore: toolArtifactStore,
                 meta,
                 entries: (conversationId, query, limit, cursor) => host.conversations.entries(conversationId, {
