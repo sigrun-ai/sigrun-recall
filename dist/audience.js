@@ -17,11 +17,14 @@ export function audienceCovers(current, item) {
         }
         // An ownerless people current with no users has a vacuous user set:
         // only its groups constrain which items may surface.
+        // This empty-reader-set behavior is the mechanical table outcome.
         return (current.sharing.groups ?? []).every((group) => item.sharing?.scope === "household" ||
             (item.sharing?.scope === "people" &&
                 item.sharing.groups?.includes(group) === true));
     }
     if (current.sharing?.scope === "household") {
+        // Level is deliberately ignored: household grants every identified user
+        // read access; its level only widens that access to write.
         return item.sharing?.scope === "household";
     }
     if (current.owner === undefined) {
