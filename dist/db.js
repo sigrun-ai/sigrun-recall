@@ -152,6 +152,12 @@ export class RecallDb {
             .get(conversationId, entryId, messageIndex, offset);
         return row === undefined ? undefined : { ...row, job: row.job === 1 };
     }
+    itemByArtifact(handle) {
+        const row = this.db
+            .prepare("SELECT * FROM items WHERE artifact = ? ORDER BY id LIMIT 1")
+            .get(handle);
+        return row === undefined ? undefined : { ...row, job: row.job === 1 };
+    }
     searchPorter(query, limit) {
         return this.searchFts("fts_porter", query, limit);
     }

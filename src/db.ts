@@ -221,6 +221,13 @@ export class RecallDb {
 		return row === undefined ? undefined : { ...row, job: row.job === 1 };
 	}
 
+	itemByArtifact(handle: string): ItemRow | undefined {
+		const row = this.db
+			.prepare("SELECT * FROM items WHERE artifact = ? ORDER BY id LIMIT 1")
+			.get(handle) as StoredItemRow | undefined;
+		return row === undefined ? undefined : { ...row, job: row.job === 1 };
+	}
+
 	searchPorter(query: string, limit: number): { id: number; bm25: number }[] {
 		return this.searchFts("fts_porter", query, limit);
 	}

@@ -30,6 +30,7 @@ export declare class RecallDb {
     }): void;
     item(id: number): ItemRow | undefined;
     itemByPassage(conversationId: number, entryId: number, messageIndex: number, offset: number): ItemRow | undefined;
+    itemByArtifact(handle: string): ItemRow | undefined;
     searchPorter(query: string, limit: number): {
         id: number;
         bm25: number;

@@ -2,8 +2,10 @@ import { join } from "node:path";
 import { defineExtension, hook, ToolTask, } from "@earendil-works/pi-durable";
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { captureConversation } from "./capture.js";
-import { resolveSettings } from "./config.js";
+import { resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
+import { createSearcher } from "./search.js";
+import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
 import { createSqliteVectorIndex, createVectorArm } from "./vectors.js";
 /**
@@ -41,6 +43,19 @@ export default function createRecall(host, deps = {}) {
         return createVectorArm(semanticDeps.embedder, semanticDeps.index, semanticDeps.timeoutMs);
     }
     void vectors;
+    const artifactStore = () => createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
+    const meta = (id) => host.conversations.meta(id);
+    const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
+    const localProviders = async (user) => {
+        try {
+            return (await resolveUserSettings(host.stores.user(user).settings)).localProviders;
+        }
+        catch {
+            return [];
+        }
+    };
+    const toolDb = db();
+    const toolArtifactStore = artifactStore();
     return {
         extension: defineExtension({
             name: "@sigrun/recall",
@@ -53,7 +68,7 @@ export default function createRecall(host, deps = {}) {
                                 return undefined;
                             const settings = await resolveSettings(host.stores.settings);
                             return externalize(result, call, {
-                                store: createArtifactStore(db(), join(host.stores.paths.data, "artifacts")),
+                                store: artifactStore(),
                                 thresholdBytes: settings.externalizeBytes,
                                 conversationId: api.conversationId,
                                 owner: meta.owner ?? null,
@@ -67,6 +82,32 @@ export default function createRecall(host, deps = {}) {
                     },
                 }),
             ],
+            tools: createTools({
+                db: toolDb,
+                searcher: createSearcher({
+                    db: toolDb,
+                    meta,
+                    entry,
+                    userSettings: async (user) => {
+                        try {
+                            return await resolveUserSettings(host.stores.user(user).settings);
+                        }
+                        catch {
+                            return { autoRecall: true, localProviders: [] };
+                        }
+                    },
+                    artifactStore: toolArtifactStore,
+                    now: deps.now ?? Date.now,
+                }),
+                artifactStore: toolArtifactStore,
+                meta,
+                entries: (conversationId, query, limit, cursor) => host.conversations.entries(conversationId, {
+                    ...query,
+                    minEntryId: query.minEntryId,
+                    maxEntryId: query.maxEntryId,
+                }, limit, cursor),
+                localProviders,
+            }),
         }),
         runSettled: async (event, api, context) => {
             try {
