@@ -17,3 +17,4 @@ pi-warden.md
 
 # local-only: the per-user API token for live import/eval (never commit)
 .token
+hermes-import-state.json
