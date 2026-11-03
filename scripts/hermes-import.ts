@@ -96,6 +96,9 @@ export async function importChains(
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 	for (const chain of converted) {
+		// An empty chain (no importable messages — e.g. a stub session)
+		// would 400 invalid_body on the import route; nothing to import.
+		if (chain.lines.length === 0) continue;
 		const existing = state[chain.root.id];
 		if (typeof existing === "number" || existing?.meta === true) continue;
 		if (existing !== undefined) {
