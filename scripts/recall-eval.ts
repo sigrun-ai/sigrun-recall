@@ -89,7 +89,10 @@ async function main(): Promise<void> {
 	for (const pair of pairs) {
 		try {
 			const response = await fetch(
-				`${baseUrl}/v1/ext/recall/search?q=${encodeURIComponent(pair.query)}&limit=${k}${pair.exclude === undefined ? "" : `&exclude=${pair.exclude}`}`,
+				// Over-fetch when excluding so filtered-out hits don't consume the
+				// top-k window (the deployed 0.1.1 route ignores ?exclude=; the
+				// client-side filter below is the operative exclusion).
+				`${baseUrl}/v1/ext/recall/search?q=${encodeURIComponent(pair.query)}&limit=${pair.exclude === undefined ? k : Math.max(k * 10, 50)}${pair.exclude === undefined ? "" : `&exclude=${pair.exclude}`}`,
 				{ headers },
 			);
 			if (!response.ok) throw new Error(`search returned ${response.status}`);
