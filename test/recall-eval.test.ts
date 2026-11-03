@@ -21,4 +21,19 @@ describe("recall eval", () => {
 		expect(result.hitAtK).toBe(2 / 3);
 		expect(result.mrr).toBeCloseTo((1 + 1 / 3) / 3);
 	});
+
+	it("drops excluded conversation hits before ranking", () => {
+		const result = evaluatePairs(
+			[{ query: "later opening", expect: 202, exclude: 101 }],
+			[[
+				{ conversationId: 101 },
+				{ conversationId: 202 },
+				{ conversationId: 303 },
+			]],
+			5,
+		);
+		expect(result.ranks).toEqual([1]);
+		expect(result.hitAtK).toBe(1);
+		expect(result.mrr).toBe(1);
+	});
 });

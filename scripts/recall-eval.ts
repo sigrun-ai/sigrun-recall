@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 export interface EvalPair {
 	query: string;
 	expect: number;
+	exclude?: number;
 	note?: string;
 }
 
@@ -17,7 +18,7 @@ export function evaluatePairs(
 	k: number,
 ): { ranks: number[]; hitAtK: number; mrr: number } {
 	const ranks = pairs.map((pair, index) => {
-		const hits = results[index] ?? [];
+		const hits = (results[index] ?? []).filter((hit) => hit.conversationId !== pair.exclude);
 		const found = hits.slice(0, k).findIndex((hit) => hit.conversationId === pair.expect);
 		return found < 0 ? 0 : found + 1;
 	});
@@ -43,10 +44,14 @@ function parsePairs(raw: string): EvalPair[] {
 			typeof (candidate as Record<string, unknown>).query !== "string" ||
 			typeof (candidate as Record<string, unknown>).expect !== "number" ||
 			!Number.isInteger((candidate as Record<string, unknown>).expect) ||
+			((candidate as Record<string, unknown>).exclude !== undefined &&
+				(typeof (candidate as Record<string, unknown>).exclude !== "number" ||
+					!Number.isInteger((candidate as Record<string, unknown>).exclude) ||
+					(candidate as Record<string, number>).exclude <= 0)) ||
 			((candidate as Record<string, unknown>).note !== undefined &&
 				typeof (candidate as Record<string, unknown>).note !== "string")
 		) {
-			throw new Error(`invalid pair at index ${index}: expected {query: string, expect: integer, note?: string}`);
+			throw new Error(`invalid pair at index ${index}: expected {query: string, expect: integer, exclude?: positive integer, note?: string}`);
 		}
 		return candidate as EvalPair;
 	});
@@ -84,7 +89,7 @@ async function main(): Promise<void> {
 	for (const pair of pairs) {
 		try {
 			const response = await fetch(
-				`${baseUrl}/v1/ext/recall/search?q=${encodeURIComponent(pair.query)}&limit=${k}`,
+				`${baseUrl}/v1/ext/recall/search?q=${encodeURIComponent(pair.query)}&limit=${k}${pair.exclude === undefined ? "" : `&exclude=${pair.exclude}`}`,
 				{ headers },
 			);
 			if (!response.ok) throw new Error(`search returned ${response.status}`);

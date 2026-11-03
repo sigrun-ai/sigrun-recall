@@ -18,11 +18,14 @@ export function createRoutes(deps: {
 				const url = new URL(request.url);
 				const requested = Number(url.searchParams.get("limit") ?? 20);
 				const limit = Number.isFinite(requested) ? Math.max(1, Math.min(100, Math.trunc(requested))) : 20;
+				const exclude = Number(url.searchParams.get("exclude"));
+				const excludeConversation = Number.isInteger(exclude) && exclude > 0 ? exclude : undefined;
 				const hits = await deps.searcher.search(
 					url.searchParams.get("q") ?? "",
 					{
 						current: { conversationId: undefined, owner: ctx.principal.user },
 						model: undefined,
+						excludeConversation,
 						includeJobs: true,
 					},
 					limit,
