@@ -87,7 +87,41 @@ describe("routes", () => {
         snippet: "clinic",
       }),
     ]);
+    const excluded = await search.handler(
+      new Request("https://example.invalid/search?q=clinic&exclude=1"),
+      {
+        principal: principal("alice"),
+      } as never,
+    );
+    expect((await excluded.json()).hits).toEqual([]);
     db.close();
+  });
+
+  it("ignores invalid, zero, and negative exclude parameters", async () => {
+    const contexts: unknown[] = [];
+    const routes = createRoutes({
+      searcher: {
+        search: async (_query, ctx) => {
+          contexts.push(ctx);
+          return [];
+        },
+      },
+      sweep: async () => ({ indexed: 0, sweepAfter: 0 }),
+    });
+    const search = routes.find((route) => route.path === "search")!;
+    for (const exclude of ["source", "0", "-1", "1,2"]) {
+      const response = await search.handler(
+        new Request(`https://example.invalid/search?q=clinic&exclude=${exclude}`),
+        { principal: principal("alice") } as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(contexts).toHaveLength(4);
+    expect(contexts).toEqual(
+      Array.from({ length: 4 }, () =>
+        expect.objectContaining({ excludeConversation: undefined }),
+      ),
+    );
   });
 
   it("the backfill route rejects a non-admin and runs one sweep for an admin", async () => {
