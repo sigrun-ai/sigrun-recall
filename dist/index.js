@@ -37,7 +37,7 @@ export default function createRecall(host, deps = {}) {
             return {};
         const key = JSON.stringify(settings.embedding);
         if (embedder === undefined || embeddingKey !== key) {
-            embedder = createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"));
+            embedder = createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"), deps.fetchImpl);
             embeddingKey = key;
         }
         return {
@@ -206,7 +206,18 @@ export default function createRecall(host, deps = {}) {
         harnessShutdown: async () => {
             const deadline = Date.now() + 30_000;
             while (pending.size > 0 && Date.now() < deadline) {
-                await Promise.allSettled([...pending]);
+                const remaining = deadline - Date.now();
+                // A capture promise may never settle (a hung embedding fetch); race
+                // each round against the remaining budget so the drain always
+                // returns by the deadline. The losing timer is cleared so the
+                // common fast-settle case leaves no live timer behind.
+                let timer;
+                await Promise.race([
+                    Promise.allSettled([...pending]),
+                    new Promise((resolve) => {
+                        timer = setTimeout(() => resolve([]), remaining);
+                    }),
+                ]).finally(() => clearTimeout(timer));
             }
             database?.close();
             database = undefined;

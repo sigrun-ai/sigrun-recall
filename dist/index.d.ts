@@ -3,6 +3,8 @@ import { RecallDb } from "./db.js";
 export interface FactoryDeps {
     openDb?: (path: string) => RecallDb;
     now?: () => number;
+    /** Test seam: fetch implementation for the embeddings endpoint. */
+    fetchImpl?: typeof fetch;
 }
 /**
  * The loader injects the host only when factory.length > 0: keep the host

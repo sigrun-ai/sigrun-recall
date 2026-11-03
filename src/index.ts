@@ -26,6 +26,8 @@ import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vector
 export interface FactoryDeps {
 	openDb?: (path: string) => RecallDb;
 	now?: () => number;
+	/** Test seam: fetch implementation for the embeddings endpoint. */
+	fetchImpl?: typeof fetch;
 }
 
 /**
@@ -63,8 +65,10 @@ export default function createRecall(
 		if (settings.embedding === undefined) return {};
 		const key = JSON.stringify(settings.embedding);
 		if (embedder === undefined || embeddingKey !== key) {
-			embedder = createEmbedder(settings.embedding, () =>
-				host.stores.secrets.get("embedding-api-key"),
+			embedder = createEmbedder(
+				settings.embedding,
+				() => host.stores.secrets.get("embedding-api-key"),
+				deps.fetchImpl,
 			);
 			embeddingKey = key;
 		}
@@ -257,7 +261,18 @@ export default function createRecall(
 		harnessShutdown: async () => {
 			const deadline = Date.now() + 30_000;
 			while (pending.size > 0 && Date.now() < deadline) {
-				await Promise.allSettled([...pending]);
+				const remaining = deadline - Date.now();
+				// A capture promise may never settle (a hung embedding fetch); race
+				// each round against the remaining budget so the drain always
+				// returns by the deadline. The losing timer is cleared so the
+				// common fast-settle case leaves no live timer behind.
+				let timer: ReturnType<typeof setTimeout>;
+				await Promise.race([
+					Promise.allSettled([...pending]),
+					new Promise<never[]>((resolve) => {
+						timer = setTimeout(() => resolve([]), remaining);
+					}),
+				]).finally(() => clearTimeout(timer));
 			}
 			database?.close();
 			database = undefined;
