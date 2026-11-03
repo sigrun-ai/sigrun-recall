@@ -6,9 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.1.0] - Unreleased
 
-### TODO
+### Changed (release pinning)
 
-- Pin `@sigrun/sigrun` and `@sigrun/shared` to the released versions carrying core C1 once they ship, replacing their development `file:` specifiers.
+- `@sigrun/shared` is pinned as a peer at `0.5.0` (runtime VALUE imports — `accessOf` — ride the peer, with the dev `file:` link to core's workspace, the ext-gateway family posture).
+- `@sigrun/sigrun` stays the development `file:../sigrun` link (types-only consumption; core 0.5.0 carries C1 on the registry — but this repo never imports it at runtime, so no pin is needed for installs).
 
 ### Added
 

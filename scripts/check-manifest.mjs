@@ -62,11 +62,15 @@ check(typeof manifest.bugs?.url === "string", "package.json: bugs.url absent");
 check(typeof manifest.homepage === "string", "package.json: homepage absent");
 
 /** Every host module an extension imports must be a peer. This package
- * develops against, and accepts, exactly the 1.4.0 host family. */
+ * develops against, and accepts, exactly the 1.4.0 host family.
+ * @sigrun/shared ships runtime VALUE imports (accessOf) — it rides as a
+ * peer so consumers' installs resolve it, with the dev file: link to
+ * core's workspace (the ext-gateway family posture). */
 const HOST_MODULE_PINS = {
 	"@earendil-works/pi-durable": "1.4.0",
 	"@earendil-works/pi-ai": "1.4.0",
 	"@earendil-works/chord": "1.4.0",
+	"@sigrun/shared": "0.5.0",
 };
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
@@ -80,6 +84,15 @@ for (const [module, spec] of Object.entries(peers)) {
 		spec === pin,
 		`package.json: peerDependencies["${module}"] must be exact "${pin}" (got ${JSON.stringify(spec)})`,
 	);
+	if (module === "@sigrun/shared") {
+		// The shared workspace keeps its file: dev shape (ext-gateway's
+		// exception, carried over verbatim).
+		check(
+			devDeps[module] === "file:../sigrun/shared",
+			`package.json: devDependencies["${module}"] must be the dev link "file:../sigrun/shared" (got ${JSON.stringify(devDeps[module])})`,
+		);
+		continue;
+	}
 	const devPin = pin;
 	check(
 		devDeps[module] === devPin,
@@ -87,13 +100,15 @@ for (const [module, spec] of Object.entries(peers)) {
 	);
 }
 
-/** The core workspace link is the sole development-only file: specifier.
- * It is pinned to the released core version before publication. */
+/** Development-only file: specifiers are the workspace links; a PUBLISHED
+ * dependencies field must be empty of them (npm pack leaves file: verbatim,
+ * so a runtime file: dep would ship broken — the family ships runtime shared
+ * through the peer instead). */
 for (const field of ["dependencies", "peerDependencies"]) {
 	for (const [module, spec] of Object.entries(manifest[field] ?? {})) {
 		check(
-			!String(spec).startsWith("file:") || (field === "dependencies" && module === "@sigrun/shared"),
-			`package.json: ${field}["${module}"] carries an unexpected file: specifier ("${spec}")`,
+			!String(spec).startsWith("file:"),
+			`package.json: ${field}["${module}"] carries a file: specifier ("${spec}") — published fields must be registry specs`,
 		);
 	}
 }
