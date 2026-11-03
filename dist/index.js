@@ -209,13 +209,15 @@ export default function createRecall(host, deps = {}) {
                 const remaining = deadline - Date.now();
                 // A capture promise may never settle (a hung embedding fetch); race
                 // each round against the remaining budget so the drain always
-                // returns by the deadline.
+                // returns by the deadline. The losing timer is cleared so the
+                // common fast-settle case leaves no live timer behind.
+                let timer;
                 await Promise.race([
                     Promise.allSettled([...pending]),
                     new Promise((resolve) => {
-                        setTimeout(() => resolve([]), remaining);
+                        timer = setTimeout(() => resolve([]), remaining);
                     }),
-                ]);
+                ]).finally(() => clearTimeout(timer));
             }
             database?.close();
             database = undefined;
