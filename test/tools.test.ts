@@ -214,4 +214,13 @@ describe("recall tools", () => {
     ).toContain("r:1");
     expect(db.taintFrom(2)).toBe(1);
   });
+
+  it("recall_open truncates neighboring turns at the byte cap without splitting a codepoint", async () => {
+    const { entries, tools } = await setup();
+    const wide = "é".repeat(9000); // 18000 bytes > OPEN_LIMIT
+    entries.push(message(2, 1, "assistant", wide));
+    const text = await execute(tools, "recall_open", { handle: "r:1" });
+    expect(text).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16384);
+  });
 });

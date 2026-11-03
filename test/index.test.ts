@@ -145,4 +145,67 @@ describe("createRecall", () => {
       }
     },
   );
+
+  it("a transient settings failure degrades search to lexical and a later call retries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
+    let failures = 1;
+    const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
+    const result = createRecall(
+      {
+        stores: {
+          paths: { data: root },
+          settings: {
+            get: async () => {
+              if (failures > 0) {
+                failures -= 1;
+                throw new Error("store temporarily unavailable");
+              }
+              return {
+                embedding: { url: "https://embeddings.example.invalid", model: "acme-embed-1" },
+              };
+            },
+          },
+          secrets: { get: async () => undefined },
+          user: () => ({ settings: { get: async () => ({}) } }),
+        },
+        conversations: {
+          meta: async () => ({
+            pinned: false,
+            tagged: [],
+            archived: false,
+            draft: { text: "", attachments: [] },
+            source: "test",
+            owner: "alice",
+          }),
+          entry: async () => undefined,
+        },
+      } as never,
+      {
+        fetchImpl: (async () =>
+          Response.json({ data: [{ embedding: [1] }] })) as never,
+      },
+    );
+    void embed;
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      const route = result.routes![0]!;
+      const first = await route.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(first.status).toBe(200);
+      const second = await route.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(second.status).toBe(200);
+    } finally {
+      console.error = originalError;
+    }
+    expect(errors).toHaveLength(1);
+    await result.harnessShutdown?.({} as never, {} as never);
+    await rm(root, { recursive: true, force: true });
+  });
 });

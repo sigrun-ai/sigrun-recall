@@ -1,3 +1,4 @@
+import type { ConversationId, EntryQuery } from "@earendil-works/pi-durable";
 import { defineTask, type AnyTask } from "@earendil-works/pi-durable";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
 
@@ -38,14 +39,14 @@ export async function runSweep(
 			const result = await deps.capture(
 				{
 					db: deps.db,
-					meta: (conversationId) => deps.host.conversations.meta(conversationId as never),
+					meta: (conversationId) => deps.host.conversations.meta(conversationId as ConversationId),
 					now: deps.now ?? Date.now,
 				},
 				id,
 				async (query, limit, cursor) => {
 					const page = await deps.host.conversations.entries(
-						id as never,
-						query as never,
+						id as ConversationId,
+						query as Omit<EntryQuery, "conversationId">,
 						limit,
 						cursor,
 					);

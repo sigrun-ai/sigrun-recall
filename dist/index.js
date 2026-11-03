@@ -18,6 +18,7 @@ import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vector
 export default function createRecall(host, deps = {}) {
     let database;
     let embedder;
+    let embedderError;
     let embeddingKey;
     let services;
     const pending = new Set();
@@ -36,7 +37,8 @@ export default function createRecall(host, deps = {}) {
         if (settings.embedding === undefined)
             return {};
         const key = JSON.stringify(settings.embedding);
-        if (embedder === undefined || embeddingKey !== key) {
+        if (embedder === undefined || embeddingKey !== key || embedderError !== undefined) {
+            embedderError = undefined;
             embedder = createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"), deps.fetchImpl);
             embeddingKey = key;
         }
@@ -47,7 +49,17 @@ export default function createRecall(host, deps = {}) {
         };
     }
     async function vectors() {
-        const semanticDeps = await semantic();
+        let semanticDeps;
+        try {
+            semanticDeps = await semantic();
+        }
+        catch (error) {
+            // Settings can transiently fail to read; degrade to lexical and let
+            // the next call retry instead of permanently caching the failure.
+            embedderError = error;
+            console.error("recall: semantic search configuration failed", error);
+            return undefined;
+        }
         if (semanticDeps.embedder === undefined ||
             semanticDeps.index === undefined ||
             semanticDeps.timeoutMs === undefined) {
@@ -55,15 +67,17 @@ export default function createRecall(host, deps = {}) {
         }
         return createVectorArm(semanticDeps.embedder, semanticDeps.index, semanticDeps.timeoutMs);
     }
-    const artifactStore = () => createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
+    let artifacts;
+    const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
+    const DEFAULT_USER_SETTINGS = { autoRecall: true, localProviders: [] };
     const userSettings = async (user) => {
         try {
             return await resolveUserSettings(host.stores.user(user).settings);
         }
         catch {
-            return { autoRecall: true, localProviders: [] };
+            return DEFAULT_USER_SETTINGS;
         }
     };
     const localProviders = async (user) => (await userSettings(user)).localProviders;
@@ -83,7 +97,6 @@ export default function createRecall(host, deps = {}) {
     function getServices() {
         if (services !== undefined)
             return services;
-        const vectorIndex = createSqliteVectorIndex(db());
         const searcher = createSearcher({
             db: db(),
             meta,
@@ -110,7 +123,6 @@ export default function createRecall(host, deps = {}) {
                 localProviders,
             }),
         };
-        void vectorIndex;
         return services;
     }
     const extension = {
@@ -142,7 +154,7 @@ export default function createRecall(host, deps = {}) {
                     try {
                         const liveMeta = await host.conversations.meta(api.conversationId);
                         const settings = liveMeta.owner === undefined
-                            ? { autoRecall: true, localProviders: [] }
+                            ? DEFAULT_USER_SETTINGS
                             : await userSettings(liveMeta.owner);
                         const agent = await api.snapshot(AgentDoc, api.conversationId, context);
                         const messages = await applyRecall(request.messages, {

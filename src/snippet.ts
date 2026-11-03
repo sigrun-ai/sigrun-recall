@@ -2,9 +2,10 @@ const SNIPPET_LENGTH = 400;
 
 /** Return a bounded window centred on the first matching query token. */
 export function snippetOf(text: string, tokens: readonly string[]): string {
+	const haystack = text.toLowerCase();
 	let firstMatch = -1;
 	for (const token of tokens) {
-		const index = text.toLowerCase().indexOf(token.toLowerCase());
+		const index = haystack.indexOf(token.toLowerCase());
 		if (index >= 0 && (firstMatch < 0 || index < firstMatch)) firstMatch = index;
 	}
 	if (firstMatch < 0) return text.slice(0, SNIPPET_LENGTH);

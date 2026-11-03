@@ -21,7 +21,7 @@ export interface HermesMessage {
 	timestamp: number;
 }
 
-const ROOT_SOURCES = new Set(["webui", "cli", "tui", "signal"]);
+export const ROOT_SOURCES = new Set(["webui", "cli", "tui", "signal"]);
 
 /** Select interactive roots and their transitive continuations in start order. */
 export function selectRoots(

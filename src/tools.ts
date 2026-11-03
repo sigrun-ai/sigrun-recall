@@ -86,11 +86,14 @@ function renderEntries(entries: readonly EntryRecord[]): string {
 	let bytes = 0;
 	const bounded: string[] = [];
 	for (const line of lines) {
+		// Count the "\n" join separator per emitted line against the cap.
 		if (bytes >= OPEN_LIMIT) break;
 		const remaining = OPEN_LIMIT - bytes;
 		const buffer = Buffer.from(line, "utf8");
-		bounded.push(buffer.subarray(0, remaining).toString("utf8"));
-		bytes += Math.min(buffer.length, remaining);
+		let end = Math.min(buffer.length, remaining);
+		while (end > 0 && end < buffer.length && (buffer[end]! & 0xc0) === 0x80) end -= 1;
+		bounded.push(buffer.subarray(0, end).toString("utf8"));
+		bytes += end + 1;
 	}
 	return bounded.join("\n");
 }

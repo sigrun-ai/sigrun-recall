@@ -57,7 +57,9 @@ export async function embedPending(db, embedder, index, entry, limit = 500) {
         const record = await entry(item.conversationId, item.entryId);
         if (record === undefined)
             continue;
-        const passage = passagesOf(record).find((candidate) => candidate.messageIndex === item.messageIndex && candidate.offset === item.offset);
+        const passage = passagesOf(record).find((candidate) => candidate.messageIndex === item.messageIndex &&
+            candidate.blockIndex === item.blockIndex &&
+            candidate.offset === item.offset);
         if (passage !== undefined)
             candidates.push({ id: item.id, text: redact(passage.text) });
     }
