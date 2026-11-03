@@ -40,6 +40,7 @@ export default function createRecall(
 ): SigrunExtensionResult {
 	let database: RecallDb | undefined;
 	let embedder: ReturnType<typeof createEmbedder> | undefined;
+	let embedderError: unknown;
 	let embeddingKey: string | undefined;
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
@@ -64,7 +65,8 @@ export default function createRecall(
 		const settings = await resolveSettings(host.stores.settings);
 		if (settings.embedding === undefined) return {};
 		const key = JSON.stringify(settings.embedding);
-		if (embedder === undefined || embeddingKey !== key) {
+		if (embedder === undefined || embeddingKey !== key || embedderError !== undefined) {
+			embedderError = undefined;
 			embedder = createEmbedder(
 				settings.embedding,
 				() => host.stores.secrets.get("embedding-api-key"),
@@ -80,7 +82,16 @@ export default function createRecall(
 	}
 
 	async function vectors() {
-		const semanticDeps = await semantic();
+		let semanticDeps;
+		try {
+			semanticDeps = await semantic();
+		} catch (error) {
+			// Settings can transiently fail to read; degrade to lexical and let
+			// the next call retry instead of permanently caching the failure.
+			embedderError = error;
+			console.error("recall: semantic search configuration failed", error);
+			return undefined;
+		}
 		if (
 			semanticDeps.embedder === undefined ||
 			semanticDeps.index === undefined ||
@@ -95,16 +106,18 @@ export default function createRecall(
 		);
 	}
 
+	let artifacts: ReturnType<typeof createArtifactStore> | undefined;
 	const artifactStore = () =>
-		createArtifactStore(db(), join(host.stores.paths.data, "artifacts"));
+		(artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
+	const DEFAULT_USER_SETTINGS = { autoRecall: true, localProviders: [] } as const;
 	const userSettings = async (user: string) => {
 		try {
 			return await resolveUserSettings(host.stores.user(user).settings);
 		} catch {
-			return { autoRecall: true, localProviders: [] };
+			return DEFAULT_USER_SETTINGS;
 		}
 	};
 	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
@@ -123,7 +136,6 @@ export default function createRecall(
 	});
 	function getServices() {
 		if (services !== undefined) return services;
-		const vectorIndex = createSqliteVectorIndex(db());
 		const searcher = createSearcher({
 			db: db(),
 			meta,
@@ -156,7 +168,6 @@ export default function createRecall(
 				localProviders,
 			}),
 		};
-		void vectorIndex;
 		return services;
 	}
 
@@ -188,8 +199,8 @@ export default function createRecall(
 							const liveMeta = await host.conversations.meta(api.conversationId);
 							const settings =
 								liveMeta.owner === undefined
-									? { autoRecall: true, localProviders: [] }
-								: await userSettings(liveMeta.owner);
+									? DEFAULT_USER_SETTINGS
+									: await userSettings(liveMeta.owner);
 							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
 							const messages = await applyRecall(request.messages, {
 								conversationId: api.conversationId,

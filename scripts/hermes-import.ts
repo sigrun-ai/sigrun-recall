@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-import { convertChain, readHermes, type HermesMessage } from "./hermes-convert.js";
+import { convertChain, readHermes, ROOT_SOURCES, type HermesMessage } from "./hermes-convert.js";
 
 interface Options {
 	db: string;
@@ -22,7 +22,13 @@ function options(argv: readonly string[]): Options {
 		else if (flag === "--db") db = argv[++index];
 		else if (flag === "--base-url") baseUrl = argv[++index];
 		else if (flag === "--state") state = argv[++index];
-		else if (flag === "--limit") limit = Number(argv[++index]);
+		else if (flag === "--limit") {
+			const parsed = Number(argv[++index]);
+			if (!Number.isInteger(parsed) || parsed <= 0) {
+				throw new Error("--limit must be a positive integer");
+			}
+			limit = parsed;
+		}
 		else throw new Error(`unknown argument: ${flag}`);
 	}
 	if (db === undefined) throw new Error("--db <path> is required");
@@ -58,7 +64,7 @@ async function main(): Promise<void> {
 		console.log(`TOTAL chains=${converted.length} messages=${all.length} bytes=${converted.reduce((sum, chain) => sum + chain.bytes, 0)} first=${date(messageDates(all).first)} last=${date(messageDates(all).last)}`);
 		const excluded = new Map<string, number>();
 		for (const session of history.sessions) {
-			if (session.parentSessionId === null && !["webui", "cli", "tui", "signal"].includes(session.source)) {
+			if (session.parentSessionId === null && !ROOT_SOURCES.has(session.source)) {
 				excluded.set(session.source, (excluded.get(session.source) ?? 0) + 1);
 			}
 		}
