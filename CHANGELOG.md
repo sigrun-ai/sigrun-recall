@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-04
+
+### Fixed
+
+- The shutdown drain is bounded by a hard deadline: a capture-embedding fetch that never
+  settles can no longer hang the drain (each round races `Promise.allSettled` against the
+  remaining time, and the race's timer is cleared so fast settles leave no live timer).
+- Parked-minors rollup: embedPending readback matches the embedding's `blockIndex`;
+  dead `void vectorIndex` statements removed; uncaught `entry()` rejections handled;
+  byte-slicing never splits a codepoint; join separators counted against the byte cap;
+  `--limit` validated; `as never` casts removed; the CLI/convert source lists and the
+  userSettings closure deduplicated (full per-item ledger in the pass notes).
+
+[0.1.4]: the polish-pass release; includes all of 0.1.3's line (the version was
+minted at the pass's start from the 0.1.2 drain work).
+
 ## [0.1.3] - 2026-11-03
 
 ### Added
