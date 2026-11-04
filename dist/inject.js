@@ -44,7 +44,10 @@ export function renderBlock(hits) {
         }
         remaining -= Buffer.byteLength(snippet);
         const day = new Date(hit.item.at).toISOString().slice(0, 10);
-        const title = hit.conversationTitle ?? `conversation ${hit.item.conversationId}`;
+        const title = hit.conversationTitle ??
+            (hit.item.kind === "doc"
+                ? "knowledge"
+                : `conversation ${hit.item.conversationId}`);
         lines.push(`- ${day} · ${title} · ${snippet} (${hit.handle})`);
     }
     return lines.join("\n");
@@ -80,17 +83,27 @@ export async function applyRecall(messages, deps) {
         let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.ownerLocalProviders);
         for (const itemId of injection.sources) {
             const item = deps.db.item(itemId);
-            if (item === undefined ||
-                item.conversationId === null ||
-                deps.sourceMeta === undefined ||
-                deps.sourceLocalProviders === undefined) {
+            if (item === undefined || deps.sourceLocalProviders === undefined) {
+                allowed = false;
+                break;
+            }
+            const providers = item.owner === null
+                ? []
+                : await deps.sourceLocalProviders(item.owner).catch(() => []);
+            if (item.conversationId === null) {
+                // User-owned documents have no conversation; the owner is the audience.
+                if (!audienceCovers(deps.meta, { owner: item.owner ?? undefined }) ||
+                    !mayRead(item.cls, deps.model, providers)) {
+                    allowed = false;
+                    break;
+                }
+                continue;
+            }
+            if (deps.sourceMeta === undefined) {
                 allowed = false;
                 break;
             }
             const source = await deps.sourceMeta(item.conversationId).catch(() => undefined);
-            const providers = item.owner === null
-                ? []
-                : await deps.sourceLocalProviders(item.owner).catch(() => []);
             if (source === undefined ||
                 source.internal === true ||
                 !audienceCovers(deps.meta, source) ||

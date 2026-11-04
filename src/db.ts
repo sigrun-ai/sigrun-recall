@@ -575,6 +575,14 @@ export class RecallDb {
 		return row === undefined ? undefined : { ...row, job: row.job === 1 };
 	}
 
+	/** The first passage item of a document, for "d:<id>" handle resolution. */
+	itemByDoc(doc: number): ItemRow | undefined {
+		const row = this.db
+			.prepare("SELECT * FROM items WHERE doc = ? ORDER BY id LIMIT 1")
+			.get(doc) as StoredItemRow | undefined;
+		return row === undefined ? undefined : { ...row, job: row.job === 1 };
+	}
+
 	searchPorter(query: string, limit: number): { id: number; bm25: number }[] {
 		return this.searchFts("fts_porter", query, limit);
 	}
@@ -655,8 +663,8 @@ export class RecallDb {
 		const rows = this.db
 			.prepare(
 				`SELECT items.* FROM items LEFT JOIN vectors ON vectors.itemId = items.id
-				 WHERE vectors.itemId IS NULL AND items.kind IN ('turn', 'tool')
-				 AND items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL
+				 WHERE vectors.itemId IS NULL AND items.kind IN ('turn', 'tool', 'doc')
+				 AND (items.kind = 'doc' OR (items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL))
 				 AND (? OR items.cls != 'local-only') ORDER BY items.id LIMIT ?`,
 			)
 			.all(includeLocalOnly ? 1 : 0, limit) as unknown as StoredItemRow[];

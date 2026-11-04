@@ -148,12 +148,21 @@ export function createSearcher(deps: {
 
 				const source = await sourceText(deps, item, entries);
 				if (source === undefined) continue;
+				const docRow = item.doc === null ? undefined : deps.db.doc(item.doc);
 				hits.push({
 					item,
 					score: candidate.score,
 					snippet: snippetOf(redact(source), tokens),
-					handle: item.kind === "artifact" ? item.artifact! : `r:${item.id}`,
-					conversationTitle: meta.name ?? meta.autoName ?? null,
+					handle:
+						item.kind === "artifact"
+							? item.artifact!
+							: item.kind === "doc"
+								? `d:${item.doc}`
+								: `r:${item.id}`,
+					conversationTitle:
+						docRow === undefined
+							? (meta.name ?? meta.autoName ?? null)
+							: docRow.title,
 				});
 			}
 			return hits;
@@ -181,6 +190,11 @@ async function sourceText(
 		return item.artifact === null
 			? undefined
 			: deps.artifactStore?.read(item.artifact, item.offset, item.length);
+	}
+	if (item.kind === "doc") {
+		return item.doc === null
+			? undefined
+			: deps.db.docText(item.doc, item.offset, item.length);
 	}
 	if (item.entryId === null || item.messageIndex === null) return undefined;
 	const key = `${item.conversationId}:${item.entryId}`;

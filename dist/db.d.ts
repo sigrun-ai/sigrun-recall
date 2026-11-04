@@ -67,6 +67,8 @@ export declare class RecallDb {
     itemsForEntries(conversationId: number, entryIds: readonly number[]): ItemRow[];
     artifactHash(handle: string): string | undefined;
     itemByArtifact(handle: string): ItemRow | undefined;
+    /** The first passage item of a document, for "d:<id>" handle resolution. */
+    itemByDoc(doc: number): ItemRow | undefined;
     searchPorter(query: string, limit: number): {
         id: number;
         bm25: number;
