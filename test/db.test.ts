@@ -177,6 +177,73 @@ describe("user-owned documents", () => {
     expect(db.matchTrigram('"lectric"')).toEqual([1]);
   });
 
+  it("a v1 database migrates to v3 keeping item ids and FTS matches", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-v1-"));
+    temporaryDirectories.push(root);
+    const path = join(root, "recall.db");
+    const raw = new DatabaseSync(path);
+    try {
+      // The v1 shape: items without blockIndex/doc, injections without sources.
+      raw.exec(`
+        CREATE TABLE items (
+          id INTEGER PRIMARY KEY,
+          conversationId INTEGER NOT NULL,
+          owner TEXT,
+          kind TEXT NOT NULL CHECK (kind IN ('turn', 'tool', 'artifact')),
+          entryId INTEGER,
+          messageIndex INTEGER,
+          offset INTEGER NOT NULL,
+          length INTEGER NOT NULL,
+          artifact TEXT,
+          job INTEGER NOT NULL CHECK (job IN (0, 1)),
+          cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+          at INTEGER NOT NULL,
+          title TEXT
+        );
+        CREATE UNIQUE INDEX items_message_key
+          ON items (conversationId, kind, entryId, messageIndex, offset)
+          WHERE kind IN ('turn', 'tool');
+        CREATE UNIQUE INDEX items_artifact_key
+          ON items (artifact, offset)
+          WHERE kind = 'artifact';
+        CREATE VIRTUAL TABLE fts_porter
+          USING fts5(text, tokenize='porter unicode61', content='');
+        CREATE VIRTUAL TABLE fts_trigram
+          USING fts5(text, tokenize='trigram', content='');
+        CREATE TABLE injections (
+          conversationId INTEGER NOT NULL,
+          messageKey TEXT NOT NULL,
+          block TEXT NOT NULL,
+          cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+          PRIMARY KEY (conversationId, messageKey)
+        );
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+      `);
+      raw
+        .prepare(
+          `INSERT INTO items (
+            conversationId, owner, kind, entryId, messageIndex, offset,
+            length, artifact, job, cls, at, title
+          ) VALUES (1, 'alice', 'turn', 10, 0, 0, 11, NULL, 0, 'normal', ?, NULL)`,
+        )
+        .run(NOW);
+      raw.prepare("INSERT INTO fts_porter(rowid, text) VALUES (1, 'electrician')").run();
+      raw.prepare("INSERT INTO fts_trigram(rowid, text) VALUES (1, 'electrician')").run();
+      raw.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+    } finally {
+      raw.close();
+    }
+
+    const db = RecallDb.open(path);
+    openDatabases.push(db);
+
+    expect(db.item(1)).toEqual({ id: 1, ...item() });
+    expect(db.searchPorter("electrician", 10).map((hit) => hit.id)).toEqual([1]);
+    expect(db.matchTrigram('"lectric"')).toEqual([1]);
+    expect(db.doc(1)).toBeUndefined();
+    expect(db.insertItem(item({ entryId: 11 }), "plumber")).toBe(2);
+  });
+
   it("a fresh database opens at v3 with the docs table", () => {
     const db = openMemory();
 

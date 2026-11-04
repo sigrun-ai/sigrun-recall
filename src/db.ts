@@ -197,6 +197,10 @@ export class RecallDb {
 				if (!itemColumns.some(({ name }) => name === "blockIndex")) {
 					this.db.exec("ALTER TABLE items ADD COLUMN blockIndex INTEGER NOT NULL DEFAULT 0");
 				}
+				// The shared SCHEMA references the v3 doc column; the v3 rebuild below restates it.
+				if (!itemColumns.some(({ name }) => name === "doc")) {
+					this.db.exec("ALTER TABLE items ADD COLUMN doc INTEGER");
+				}
 				const injectionColumns = this.db.prepare("PRAGMA table_info(injections)").all() as { name: string }[];
 				if (!injectionColumns.some(({ name }) => name === "sources")) {
 					this.db.exec("ALTER TABLE injections ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'");
