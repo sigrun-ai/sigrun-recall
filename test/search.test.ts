@@ -45,6 +45,7 @@ function item(
     offset: 0,
     length: 100,
     artifact: null,
+    doc: null,
     job: false,
     cls: "normal",
     at: NOW,
@@ -74,13 +75,14 @@ function setup(
   const db = RecallDb.open(":memory:");
   const row = item(options.item);
   db.insertItem(row, text);
+  const conversationId = row.conversationId ?? 1;
   const metas = new Map<number, SessionMeta>([
-    [row.conversationId, options.meta ?? meta()],
+    [conversationId, options.meta ?? meta()],
   ]);
   const entries = new Map<string, EntryRecord>([
     [
-      `${row.conversationId}:${row.entryId}`,
-      entry(row.entryId!, row.conversationId, text),
+      `${conversationId}:${row.entryId}`,
+      entry(row.entryId!, conversationId, text),
     ],
   ]);
   const searcher = createSearcher({

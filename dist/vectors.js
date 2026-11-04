@@ -51,7 +51,8 @@ export async function embedPending(db, embedder, index, entry, limit = 500) {
     const candidates = [];
     for (const item of db.listUnembeddedItems(limit, embedder.local)) {
         if (item.entryId === null ||
-            item.messageIndex === null) {
+            item.messageIndex === null ||
+            item.conversationId === null) {
             continue;
         }
         const record = await entry(item.conversationId, item.entryId);

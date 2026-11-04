@@ -89,6 +89,7 @@ describe("backfill", () => {
         offset: 0,
         length: 13,
         artifact: null,
+        doc: null,
         job: false,
         cls: "normal",
         at: NOW,

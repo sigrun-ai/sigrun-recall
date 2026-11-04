@@ -81,6 +81,7 @@ export async function applyRecall(messages, deps) {
         for (const itemId of injection.sources) {
             const item = deps.db.item(itemId);
             if (item === undefined ||
+                item.conversationId === null ||
                 deps.sourceMeta === undefined ||
                 deps.sourceLocalProviders === undefined) {
                 allowed = false;

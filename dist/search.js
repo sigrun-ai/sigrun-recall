@@ -60,12 +60,26 @@ export function createSearcher(deps) {
                     (ctx.until !== undefined && item.at >= ctx.until)) {
                     continue;
                 }
-                let metaPromise = metas.get(item.conversationId);
-                if (metaPromise === undefined) {
-                    metaPromise = deps.meta(item.conversationId).catch(() => undefined);
-                    metas.set(item.conversationId, metaPromise);
+                let metaPromise;
+                if (item.conversationId !== null) {
+                    metaPromise = metas.get(item.conversationId);
+                    if (metaPromise === undefined) {
+                        metaPromise = deps.meta(item.conversationId).catch(() => undefined);
+                        metas.set(item.conversationId, metaPromise);
+                    }
                 }
-                const meta = await metaPromise;
+                else if (item.owner !== null) {
+                    // User-owned documents have no conversation; the owner is the audience.
+                    metaPromise = Promise.resolve({
+                        pinned: false,
+                        tagged: [],
+                        archived: false,
+                        draft: { text: "", attachments: [] },
+                        source: "doc",
+                        owner: item.owner,
+                    });
+                }
+                const meta = metaPromise === undefined ? undefined : await metaPromise;
                 if (meta === undefined ||
                     meta.internal === true ||
                     !audienceCovers(ctx.current, meta)) {
@@ -120,7 +134,11 @@ async function sourceText(deps, item, entries) {
     const key = `${item.conversationId}:${item.entryId}`;
     let entryPromise = entries.get(key);
     if (entryPromise === undefined) {
-        entryPromise = deps.entry(item.conversationId, item.entryId);
+        const conversationId = item.conversationId;
+        const entryId = item.entryId;
+        if (conversationId === null)
+            return undefined;
+        entryPromise = deps.entry(conversationId, entryId);
         entries.set(key, entryPromise);
     }
     const entry = await entryPromise;

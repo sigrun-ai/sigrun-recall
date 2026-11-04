@@ -70,7 +70,8 @@ export async function embedPending(
 	for (const item of db.listUnembeddedItems(limit, embedder.local)) {
 		if (
 			item.entryId === null ||
-			item.messageIndex === null
+			item.messageIndex === null ||
+			item.conversationId === null
 		) {
 			continue;
 		}

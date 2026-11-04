@@ -111,6 +111,7 @@ export async function applyRecall(
 			const item = deps.db.item(itemId);
 			if (
 				item === undefined ||
+				item.conversationId === null ||
 				deps.sourceMeta === undefined ||
 				deps.sourceLocalProviders === undefined
 			) {

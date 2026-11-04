@@ -1,8 +1,8 @@
-export type ItemKind = "turn" | "tool" | "artifact";
+export type ItemKind = "turn" | "tool" | "artifact" | "doc";
 export type Confidentiality = "normal" | "local-only";
 export interface ItemRow {
     id: number;
-    conversationId: number;
+    conversationId: number | null;
     owner: string | null;
     kind: ItemKind;
     entryId: number | null;
@@ -11,11 +11,28 @@ export interface ItemRow {
     offset: number;
     length: number;
     artifact: string | null;
+    /** docs.id for kind "doc"; null otherwise. */
+    doc: number | null;
     job: boolean;
     cls: Confidentiality;
     /** Milliseconds since the Unix epoch: the message's own time. */
     at: number;
     title: string | null;
+}
+export interface DocRow {
+    id: number;
+    provider: string;
+    docId: string;
+    owner: string;
+    kind: string;
+    title: string;
+    url: string | null;
+    at: number;
+    cls: Confidentiality;
+    /** Redacted full text; passages slice it for FTS. */
+    text: string;
+    sources: string[];
+    updatedAt: number;
 }
 /** The extension's private SQLite index. Callers close it during shutdown. */
 export declare class RecallDb {
@@ -24,6 +41,22 @@ export declare class RecallDb {
     static open(path: string): RecallDb;
     private migrate;
     insertItem(row: Omit<ItemRow, "id">, text: string): number | undefined;
+    /**
+     * Store a user-owned document and index its redacted text as "doc" items.
+     * Identical content, title, date, class and sources leave the store untouched.
+     */
+    upsertDoc(doc: Omit<DocRow, "id" | "updatedAt">, now: number): {
+        id: number;
+        changed: boolean;
+    };
+    /** Delete a document, its items, FTS rows and vectors. */
+    removeDoc(provider: string, owner: string, docId: string): boolean;
+    doc(id: number): DocRow | undefined;
+    docByKey(provider: string, owner: string, docId: string): DocRow | undefined;
+    /** A slice of a document's stored redacted text, matching its passage rows. */
+    docText(id: number, offset: number, length: number): string | undefined;
+    /** Delete a document's items, removing their FTS rows and vectors first. */
+    private deleteDocItems;
     putArtifact(hash: string, bytes: number, meta: {
         title?: string;
         url?: string;

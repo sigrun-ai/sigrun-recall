@@ -30,6 +30,7 @@ export async function captureConversation(deps, conversationId, read) {
                     offset: passage.offset,
                     length: passage.length,
                     artifact: null,
+                    doc: null,
                     job: meta.jobId !== undefined,
                     cls: taintFrom !== undefined && passage.entryId >= taintFrom
                         ? "local-only"

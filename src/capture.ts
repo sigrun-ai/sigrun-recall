@@ -58,6 +58,7 @@ export async function captureConversation(
 						offset: passage.offset,
 						length: passage.length,
 						artifact: null,
+						doc: null,
 						job: meta.jobId !== undefined,
 						cls:
 							taintFrom !== undefined && passage.entryId >= taintFrom

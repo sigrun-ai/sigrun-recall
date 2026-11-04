@@ -46,6 +46,7 @@ function hit(
       offset: 0,
       length: snippet.length,
       artifact: null,
+      doc: null,
       job: false,
       cls,
       at: AT,

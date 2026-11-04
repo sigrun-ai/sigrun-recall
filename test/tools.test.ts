@@ -67,6 +67,7 @@ function item(
     offset: 0,
     length: 6,
     artifact: null,
+    doc: null,
     job: false,
     cls: "normal",
     at: NOW,

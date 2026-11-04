@@ -1,18 +1,21 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { splitText } from "./passages.js";
+import { redact } from "./redact.js";
 const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS items (
 		id INTEGER PRIMARY KEY,
-		conversationId INTEGER NOT NULL,
+		conversationId INTEGER,
 		owner TEXT,
-		kind TEXT NOT NULL CHECK (kind IN ('turn', 'tool', 'artifact')),
+		kind TEXT NOT NULL CHECK (kind IN ('turn', 'tool', 'artifact', 'doc')),
 		entryId INTEGER,
 		messageIndex INTEGER,
 		blockIndex INTEGER NOT NULL DEFAULT 0,
 		offset INTEGER NOT NULL,
 		length INTEGER NOT NULL,
 		artifact TEXT,
+		doc INTEGER,
 		job INTEGER NOT NULL CHECK (job IN (0, 1)),
 		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
 		at INTEGER NOT NULL,
@@ -24,11 +27,30 @@ const SCHEMA = `
 	CREATE UNIQUE INDEX IF NOT EXISTS items_artifact_key
 		ON items (artifact, offset)
 		WHERE kind = 'artifact';
+	CREATE UNIQUE INDEX IF NOT EXISTS items_doc_key
+		ON items (doc, offset)
+		WHERE kind = 'doc';
 
 	CREATE VIRTUAL TABLE IF NOT EXISTS fts_porter
 		USING fts5(text, tokenize='porter unicode61', content='');
 	CREATE VIRTUAL TABLE IF NOT EXISTS fts_trigram
 		USING fts5(text, tokenize='trigram', content='');
+
+	CREATE TABLE IF NOT EXISTS docs (
+		id INTEGER PRIMARY KEY,
+		provider TEXT NOT NULL,
+		docId TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		title TEXT NOT NULL,
+		url TEXT,
+		at INTEGER NOT NULL,
+		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+		text TEXT NOT NULL,
+		sources TEXT NOT NULL DEFAULT '[]',
+		updatedAt INTEGER NOT NULL,
+		UNIQUE (provider, owner, docId)
+	);
 
 	CREATE TABLE IF NOT EXISTS artifacts (
 		hash TEXT PRIMARY KEY,
@@ -95,7 +117,7 @@ export class RecallDb {
                 .get();
             if (current === undefined) {
                 this.db.exec(SCHEMA);
-                this.db.prepare("INSERT INTO schema_version (version) VALUES (2)").run();
+                this.db.prepare("INSERT INTO schema_version (version) VALUES (3)").run();
             }
             else if (current.version < 2) {
                 const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
@@ -110,6 +132,67 @@ export class RecallDb {
                 this.db.exec(SCHEMA);
                 this.db.prepare("UPDATE schema_version SET version = 2").run();
             }
+            const afterV2 = this.db
+                .prepare("SELECT version FROM schema_version")
+                .get();
+            if (afterV2.version < 3) {
+                // Rebuild items with nullable conversationId, the doc column and the
+                // widened kind check; ids are preserved so FTS rowids stay valid.
+                this.db.exec(`
+					ALTER TABLE items RENAME TO items_v2;
+					CREATE TABLE items (
+						id INTEGER PRIMARY KEY,
+						conversationId INTEGER,
+						owner TEXT,
+						kind TEXT NOT NULL CHECK (kind IN ('turn', 'tool', 'artifact', 'doc')),
+						entryId INTEGER,
+						messageIndex INTEGER,
+						blockIndex INTEGER NOT NULL DEFAULT 0,
+						offset INTEGER NOT NULL,
+						length INTEGER NOT NULL,
+						artifact TEXT,
+						doc INTEGER,
+						job INTEGER NOT NULL CHECK (job IN (0, 1)),
+						cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+						at INTEGER NOT NULL,
+						title TEXT
+					);
+					INSERT INTO items (
+						id, conversationId, owner, kind, entryId, messageIndex, blockIndex,
+						offset, length, artifact, job, cls, at, title
+					)
+					SELECT
+						id, conversationId, owner, kind, entryId, messageIndex, blockIndex,
+						offset, length, artifact, job, cls, at, title
+					FROM items_v2;
+					DROP TABLE items_v2;
+					CREATE UNIQUE INDEX items_message_key
+						ON items (conversationId, kind, entryId, messageIndex, blockIndex, offset)
+						WHERE kind IN ('turn', 'tool');
+					CREATE UNIQUE INDEX items_artifact_key
+						ON items (artifact, offset)
+						WHERE kind = 'artifact';
+					CREATE UNIQUE INDEX items_doc_key
+						ON items (doc, offset)
+						WHERE kind = 'doc';
+					CREATE TABLE IF NOT EXISTS docs (
+						id INTEGER PRIMARY KEY,
+						provider TEXT NOT NULL,
+						docId TEXT NOT NULL,
+						owner TEXT NOT NULL,
+						kind TEXT NOT NULL,
+						title TEXT NOT NULL,
+						url TEXT,
+						at INTEGER NOT NULL,
+						cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+						text TEXT NOT NULL,
+						sources TEXT NOT NULL DEFAULT '[]',
+						updatedAt INTEGER NOT NULL,
+						UNIQUE (provider, owner, docId)
+					);
+				`);
+                this.db.prepare("UPDATE schema_version SET version = 3").run();
+            }
             this.db.exec("COMMIT");
         }
         catch (error) {
@@ -123,15 +206,17 @@ export class RecallDb {
             const inserted = this.db
                 .prepare(`INSERT INTO items (
 					conversationId, owner, kind, entryId, messageIndex, blockIndex, offset,
-					length, artifact, job, cls, at, title
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					length, artifact, doc, job, cls, at, title
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
 					ON CONFLICT(conversationId, kind, entryId, messageIndex, blockIndex, offset)
 						WHERE kind IN ('turn', 'tool') DO NOTHING
 					ON CONFLICT(artifact, offset)
 						WHERE kind = 'artifact' DO NOTHING
+					ON CONFLICT(doc, offset)
+						WHERE kind = 'doc' DO NOTHING
 					RETURNING id`)
-                .get(row.conversationId, row.owner, row.kind, row.entryId, row.messageIndex, row.blockIndex, row.offset, row.length, row.artifact, row.job ? 1 : 0, row.cls, row.at, row.title);
+                .get(row.conversationId, row.owner, row.kind, row.entryId, row.messageIndex, row.blockIndex, row.offset, row.length, row.artifact, row.doc, row.job ? 1 : 0, row.cls, row.at, row.title);
             if (inserted === undefined) {
                 this.db.exec("COMMIT");
                 return undefined;
@@ -149,6 +234,139 @@ export class RecallDb {
             this.db.exec("ROLLBACK");
             throw error;
         }
+    }
+    /**
+     * Store a user-owned document and index its redacted text as "doc" items.
+     * Identical content, title, date, class and sources leave the store untouched.
+     */
+    upsertDoc(doc, now) {
+        const text = redact(doc.text);
+        const sources = JSON.stringify(doc.sources);
+        const existing = this.db
+            .prepare("SELECT * FROM docs WHERE provider = ? AND owner = ? AND docId = ?")
+            .get(doc.provider, doc.owner, doc.docId);
+        if (existing !== undefined &&
+            existing.text === text &&
+            existing.title === doc.title &&
+            existing.at === doc.at &&
+            existing.cls === doc.cls &&
+            existing.sources === sources) {
+            return { id: existing.id, changed: false };
+        }
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const stored = this.db
+                .prepare("SELECT * FROM docs WHERE provider = ? AND owner = ? AND docId = ?")
+                .get(doc.provider, doc.owner, doc.docId);
+            if (stored !== undefined &&
+                stored.text === text &&
+                stored.title === doc.title &&
+                stored.at === doc.at &&
+                stored.cls === doc.cls &&
+                stored.sources === sources) {
+                this.db.exec("COMMIT");
+                return { id: stored.id, changed: false };
+            }
+            let id;
+            if (stored === undefined) {
+                const inserted = this.db
+                    .prepare(`INSERT INTO docs (
+							provider, docId, owner, kind, title, url, at, cls, text, sources, updatedAt
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+                    .get(doc.provider, doc.docId, doc.owner, doc.kind, doc.title, doc.url, doc.at, doc.cls, text, sources, now);
+                id = inserted.id;
+            }
+            else {
+                id = stored.id;
+                this.deleteDocItems(id, stored.text);
+                this.db
+                    .prepare(`UPDATE docs SET
+							kind = ?, title = ?, url = ?, at = ?, cls = ?, text = ?, sources = ?, updatedAt = ?
+						WHERE id = ?`)
+                    .run(doc.kind, doc.title, doc.url, doc.at, doc.cls, text, sources, now, id);
+            }
+            for (const passage of splitText(text)) {
+                this.db
+                    .prepare(`INSERT INTO items (
+							conversationId, owner, kind, entryId, messageIndex, blockIndex, offset,
+							length, artifact, doc, job, cls, at, title
+						) VALUES (NULL, ?, 'doc', NULL, NULL, 0, ?, ?, NULL, ?, 0, ?, ?, ?) RETURNING id`)
+                    .get(doc.owner, passage.offset, passage.text.length, id, doc.cls, doc.at, doc.title);
+            }
+            // SAFETY: the items schema stores integer ids, offsets and lengths.
+            const rows = this.db
+                .prepare("SELECT id, offset, length FROM items WHERE doc = ? AND kind = 'doc'")
+                .all(id);
+            for (const row of rows) {
+                const passage = text.slice(row.offset, row.offset + row.length);
+                this.db
+                    .prepare("INSERT INTO fts_porter(rowid, text) VALUES (?, ?)")
+                    .run(row.id, passage);
+                this.db
+                    .prepare("INSERT INTO fts_trigram(rowid, text) VALUES (?, ?)")
+                    .run(row.id, passage);
+            }
+            this.db.exec("COMMIT");
+            return { id, changed: true };
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    /** Delete a document, its items, FTS rows and vectors. */
+    removeDoc(provider, owner, docId) {
+        const stored = this.db
+            .prepare("SELECT * FROM docs WHERE provider = ? AND owner = ? AND docId = ?")
+            .get(provider, owner, docId);
+        if (stored === undefined)
+            return false;
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.deleteDocItems(stored.id, stored.text);
+            this.db.prepare("DELETE FROM docs WHERE id = ?").run(stored.id);
+            this.db.exec("COMMIT");
+            return true;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    doc(id) {
+        const row = this.db.prepare("SELECT * FROM docs WHERE id = ?").get(id);
+        return row === undefined ? undefined : docFromStored(row);
+    }
+    docByKey(provider, owner, docId) {
+        const row = this.db
+            .prepare("SELECT * FROM docs WHERE provider = ? AND owner = ? AND docId = ?")
+            .get(provider, owner, docId);
+        return row === undefined ? undefined : docFromStored(row);
+    }
+    /** A slice of a document's stored redacted text, matching its passage rows. */
+    docText(id, offset, length) {
+        const row = this.db
+            .prepare("SELECT text FROM docs WHERE id = ?")
+            .get(id);
+        return row === undefined ? undefined : row.text.slice(offset, offset + length);
+    }
+    /** Delete a document's items, removing their FTS rows and vectors first. */
+    deleteDocItems(docId, text) {
+        // SAFETY: the items schema stores integer ids, offsets and lengths.
+        const rows = this.db
+            .prepare("SELECT id, offset, length FROM items WHERE doc = ? AND kind = 'doc'")
+            .all(docId);
+        for (const row of rows) {
+            const passage = text.slice(row.offset, row.offset + row.length);
+            this.db
+                .prepare("INSERT INTO fts_porter(fts_porter, rowid, text) VALUES ('delete', ?, ?)")
+                .run(row.id, passage);
+            this.db
+                .prepare("INSERT INTO fts_trigram(fts_trigram, rowid, text) VALUES ('delete', ?, ?)")
+                .run(row.id, passage);
+            this.db.prepare("DELETE FROM vectors WHERE itemId = ?").run(row.id);
+        }
+        this.db.prepare("DELETE FROM items WHERE doc = ? AND kind = 'doc'").run(docId);
     }
     putArtifact(hash, bytes, meta) {
         this.db
@@ -303,4 +521,11 @@ export class RecallDb {
     close() {
         this.db.close();
     }
+}
+function docFromStored(row) {
+    const parsed = JSON.parse(row.sources);
+    const sources = Array.isArray(parsed)
+        ? parsed.filter((source) => typeof source === "string")
+        : [];
+    return { ...row, sources };
 }

@@ -15,7 +15,7 @@ export interface Passage {
 }
 
 /** Split text at the latest paragraph, then line, boundary before the limit. */
-function splitText(text: string): { text: string; offset: number }[] {
+export function splitText(text: string): { text: string; offset: number }[] {
 	const passages: { text: string; offset: number }[] = [];
 	let offset = 0;
 	while (offset < text.length) {
