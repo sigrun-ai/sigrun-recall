@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.2.0] - Unreleased
 
-<!-- TODO: pin `@sigrun/sigrun` to the release carrying published hooks when it lands. -->
+<!-- Pin note: the published-hooks seam requires core ≥ 0.9.0 (the
+     release carrying `host.publishedHooks`). This repo's dev link tracks
+     core's main directly; a published install needs core 0.9.0+ for the
+     hooks to fire (absent core degrades to no mirroring, not errors). -->
 
 ### Added
 
