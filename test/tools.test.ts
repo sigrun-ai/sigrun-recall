@@ -12,7 +12,7 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createArtifactStore } from "../src/artifacts.js";
-import { RecallDb, type ItemRow } from "../src/db.js";
+import { RecallDb, type DocRow, type ItemRow } from "../src/db.js";
 import { createSearcher } from "../src/search.js";
 import { createTools, type ToolsDeps } from "../src/tools.js";
 
@@ -67,6 +67,7 @@ function item(
     offset: 0,
     length: 6,
     artifact: null,
+    doc: null,
     job: false,
     cls: "normal",
     at: NOW,
@@ -222,5 +223,99 @@ describe("recall tools", () => {
     const text = await execute(tools, "recall_open", { handle: "r:1" });
     expect(text).not.toContain("\uFFFD");
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16384);
+  });
+
+  function doc(
+    overrides: Partial<Omit<DocRow, "id" | "updatedAt">> = {},
+  ): Omit<DocRow, "id" | "updatedAt"> {
+    return {
+      provider: "acme-local",
+      docId: "d1",
+      owner: "alice",
+      kind: "record",
+      title: "Northside Vet research",
+      url: null,
+      at: NOW,
+      cls: "normal",
+      text: "the harbourside bakery sells bread",
+      sources: [],
+      ...overrides,
+    };
+  }
+
+  it('recall_search kind "record" returns only docs, grouped under knowledge, with d: handles', async () => {
+    const { db, tools } = await setup();
+    const stored = db.upsertDoc(doc(), NOW);
+    const text = await execute(tools, "recall_search", {
+      query: "harbourside",
+      kind: "record",
+    });
+    expect(text).toBe(
+      `[2026-11-02] knowledge — the harbourside bakery sells bread (d:${stored.id})`,
+    );
+  });
+
+  it("recall_open d:<id> returns the doc text", async () => {
+    const { db, tools } = await setup();
+    const stored = db.upsertDoc(doc(), NOW);
+    expect(
+      await execute(tools, "recall_open", { handle: `d:${stored.id}` }),
+    ).toBe("the harbourside bakery sells bread");
+  });
+
+  it('recall_open d:<id> of a doc bob cannot read answers "Not available here."', async () => {
+    const { db, tools, metas } = await setup();
+    metas.set(3, meta({ owner: "bob", name: "Bob's conversation" }));
+    const stored = db.upsertDoc(doc(), NOW);
+    const bob = async (
+      name: "recall_search" | "recall_open",
+      args: Record<string, unknown>,
+    ) => {
+      const tool = tools.find((candidate) => candidate.name === name)!;
+      const api = {
+        conversationId: 3,
+        agent: async () => ({ model: { provider: "acme-local", modelId: "test-model" } }),
+      } as unknown as ToolExecutionApi;
+      const result = await tool.execute(args as never, api, {} as Context);
+      return (result.output ?? [])
+        .map((part) => (part.type === "text" ? part.text : ""))
+        .join("\n");
+    };
+    expect(await bob("recall_open", { handle: `d:${stored.id}` })).toBe(
+      "Not available here.",
+    );
+    expect(await bob("recall_search", { query: "harbourside" })).toBe(
+      "No matching past material.",
+    );
+  });
+
+  it("recall_open d:<id> respects offset and length", async () => {
+    const { db, tools } = await setup();
+    const stored = db.upsertDoc(doc(), NOW);
+    expect(
+      await execute(tools, "recall_open", {
+        handle: `d:${stored.id}`,
+        offset: 4,
+        length: 11,
+      }),
+    ).toBe("harbourside");
+  });
+
+  it("alice's record never surfaces in alice's conversation shared with bob — search and recall_open", async () => {
+    const { db, tools, metas } = await setup();
+    metas.set(
+      2,
+      meta({
+        name: "Current conversation",
+        sharing: { scope: "people", users: ["bob"], level: "read" },
+      }),
+    );
+    const stored = db.upsertDoc(doc(), NOW);
+    expect(
+      await execute(tools, "recall_search", { query: "harbourside" }),
+    ).toBe("No matching past material.");
+    expect(
+      await execute(tools, "recall_open", { handle: `d:${stored.id}` }),
+    ).toBe("Not available here.");
   });
 });

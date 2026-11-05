@@ -4,9 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.5] - 2026-11-05
+## [0.2.0] - Unreleased
 
-### Fixed
+<!-- TODO: pin `@sigrun/sigrun` to the release carrying published hooks when it lands. -->
+
+### Added
+
+- Published hooks `recall.index`, `recall.remove` and `recall.search`: the extension-to-extension seam that lets other extensions store, delete and search user-owned documents. Documents are keyed `(caller, user, id)`; a stored document's class is the strictest of its declared class and the classes of its existing `sources`; search without a user returns no hits and without a model surfaces only `normal` items.
+- User-owned documents (schema v3): documents with no conversation, surfaced in search
+  (`recall_search` kind `"record"`), `recall_open` (`d:` handles), auto-recall and the
+  embedding sweep — owner-private through the audience rule at every egress, `local-only`
+  docs only embedded by local endpoints. Ordered v2→v3 migration preserves item ids and
+  FTS rows; v1 databases migrate through too.
+
+### Fixed (0.1.5, folded into this line)
 
 - The `@sigrun/shared` peer accepts every line since the runtime value imports landed
   (`0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0`). It was pinned to a bare `0.5.0`, so a

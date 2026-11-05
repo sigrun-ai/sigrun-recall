@@ -50,8 +50,17 @@ function cosine(left, right) {
 export async function embedPending(db, embedder, index, entry, limit = 500) {
     const candidates = [];
     for (const item of db.listUnembeddedItems(limit, embedder.local)) {
+        if (item.kind === "doc") {
+            if (item.doc === null)
+                continue;
+            const text = db.docText(item.doc, item.offset, item.length);
+            if (text !== undefined)
+                candidates.push({ id: item.id, text });
+            continue;
+        }
         if (item.entryId === null ||
-            item.messageIndex === null) {
+            item.messageIndex === null ||
+            item.conversationId === null) {
             continue;
         }
         const record = await entry(item.conversationId, item.entryId);

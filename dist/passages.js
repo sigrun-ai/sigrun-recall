@@ -1,7 +1,7 @@
 const PASSAGE_LIMIT = 2000;
 const TOOL_ARGUMENT_LIMIT = 300;
 /** Split text at the latest paragraph, then line, boundary before the limit. */
-function splitText(text) {
+export function splitText(text) {
     const passages = [];
     let offset = 0;
     while (offset < text.length) {

@@ -1,5 +1,6 @@
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
 import { RecallDb } from "./db.js";
+export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOutput, RecallSearchInput, RecallSearchOutput, } from "./hooks.js";
 export interface FactoryDeps {
     openDb?: (path: string) => RecallDb;
     now?: () => number;

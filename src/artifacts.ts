@@ -64,6 +64,7 @@ export function createArtifactStore(db: RecallDb, dir: string): ArtifactStore {
 						offset,
 						length: bytes.length,
 						artifact: handle,
+						doc: null,
 						job: false,
 						cls: "normal",
 						at: meta.at,

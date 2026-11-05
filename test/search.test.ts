@@ -45,6 +45,7 @@ function item(
     offset: 0,
     length: 100,
     artifact: null,
+    doc: null,
     job: false,
     cls: "normal",
     at: NOW,
@@ -74,13 +75,14 @@ function setup(
   const db = RecallDb.open(":memory:");
   const row = item(options.item);
   db.insertItem(row, text);
+  const conversationId = row.conversationId ?? 1;
   const metas = new Map<number, SessionMeta>([
-    [row.conversationId, options.meta ?? meta()],
+    [conversationId, options.meta ?? meta()],
   ]);
   const entries = new Map<string, EntryRecord>([
     [
-      `${row.conversationId}:${row.entryId}`,
-      entry(row.entryId!, row.conversationId, text),
+      `${conversationId}:${row.entryId}`,
+      entry(row.entryId!, conversationId, text),
     ],
   ]);
   const searcher = createSearcher({
@@ -212,5 +214,119 @@ describe("search", () => {
   it('FTS syntax in the query ("a OR b NEAR(c") does not throw', async () => {
     const { searcher } = setup("clinic");
     expect(await searcher.search("a OR b NEAR(c", context(), 10)).toEqual([]);
+  });
+
+  it("alice's record surfaces in her private conversation with a d: handle, her record's title and a doc snippet", async () => {
+    const db = RecallDb.open(":memory:");
+    const stored = db.upsertDoc(
+      {
+        provider: "acme-local",
+        docId: "d1",
+        owner: "alice",
+        kind: "record",
+        title: "Northside Vet research",
+        url: null,
+        at: NOW,
+        cls: "normal",
+        text: "the harbourside bakery sells bread",
+        sources: [],
+      },
+      NOW,
+    );
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => undefined,
+      userSettings: async () => ({
+        autoRecall: true,
+        localProviders: ["acme-local"],
+      }),
+      now: () => NOW,
+    });
+    const hits = await searcher.search("harbourside", context(), 10);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.handle).toBe(`d:${stored.id}`);
+    expect(hits[0]?.conversationTitle).toBe("Northside Vet research");
+    expect(hits[0]?.snippet).toContain("harbourside");
+    expect(hits[0]?.item.at).toBe(NOW);
+    db.close();
+  });
+
+  it("alice's record never surfaces in alice's conversation shared with bob", async () => {
+    const db = RecallDb.open(":memory:");
+    db.upsertDoc(
+      {
+        provider: "acme-local",
+        docId: "d1",
+        owner: "alice",
+        kind: "record",
+        title: "Northside Vet research",
+        url: null,
+        at: NOW,
+        cls: "normal",
+        text: "the harbourside bakery sells bread",
+        sources: [],
+      },
+      NOW,
+    );
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => undefined,
+      userSettings: async () => ({
+        autoRecall: true,
+        localProviders: ["acme-local"],
+      }),
+      now: () => NOW,
+    });
+    const sharedWithBob = context({
+      current: {
+        conversationId: 2,
+        owner: "alice",
+        sharing: { scope: "people", users: ["bob"], level: "read" },
+      },
+    });
+    expect(await searcher.search("harbourside", sharedWithBob, 10)).toEqual([]);
+    const asBob = context({ current: { conversationId: 3, owner: "bob" } });
+    expect(await searcher.search("harbourside", asBob, 10)).toEqual([]);
+    db.close();
+  });
+
+  it("a local-only doc is withheld from acme-cloud and shown to acme-local when alice lists acme-local", async () => {
+    const db = RecallDb.open(":memory:");
+    db.upsertDoc(
+      {
+        provider: "acme-local",
+        docId: "d1",
+        owner: "alice",
+        kind: "record",
+        title: "Northside Vet research",
+        url: null,
+        at: NOW,
+        cls: "local-only",
+        text: "the harbourside bakery sells bread",
+        sources: [],
+      },
+      NOW,
+    );
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => undefined,
+      userSettings: async () => ({
+        autoRecall: true,
+        localProviders: ["acme-local"],
+      }),
+      now: () => NOW,
+    });
+    expect(
+      await searcher.search(
+        "harbourside",
+        context({ model: { provider: "acme-cloud" } }),
+        10,
+      ),
+    ).toEqual([]);
+    expect(await searcher.search("harbourside", context(), 10)).toHaveLength(1);
+    db.close();
   });
 });

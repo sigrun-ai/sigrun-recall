@@ -38,6 +38,7 @@ describe("routes", () => {
           offset: 0,
           length: 6,
           artifact: null,
+          doc: null,
           job: false,
           cls: "normal",
           at: 1_700_000_000_000,

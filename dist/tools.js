@@ -21,7 +21,19 @@ function taint(db, conversationId, item) {
 async function permitted(deps, current, item, provider) {
     if (!audienceCovers(current, { owner: item.owner ?? undefined }))
         return undefined;
-    const meta = await deps.meta(item.conversationId).catch(() => undefined);
+    // User-owned documents have no conversation; the owner is the audience.
+    const meta = item.conversationId === null
+        ? item.owner === null
+            ? undefined
+            : {
+                pinned: false,
+                tagged: [],
+                archived: false,
+                draft: { text: "", attachments: [] },
+                source: "doc",
+                owner: item.owner,
+            }
+        : await deps.meta(item.conversationId).catch(() => undefined);
     if (meta === undefined || meta.internal === true || !audienceCovers(current, meta)) {
         return undefined;
     }
@@ -73,7 +85,11 @@ export function createTools(deps) {
             query: Type.String(),
             since: Type.Optional(Type.String()),
             until: Type.Optional(Type.String()),
-            kind: Type.Optional(Type.Union([Type.Literal("conversation"), Type.Literal("page")])),
+            kind: Type.Optional(Type.Union([
+                Type.Literal("conversation"),
+                Type.Literal("page"),
+                Type.Literal("record"),
+            ])),
             conversation: Type.Optional(Type.Number()),
         }),
         replay: "safe",
@@ -85,7 +101,9 @@ export function createTools(deps) {
                 ? ["turn", "tool"]
                 : args.kind === "page"
                     ? ["artifact"]
-                    : undefined;
+                    : args.kind === "record"
+                        ? ["doc"]
+                        : undefined;
             const hits = await deps.searcher.search(args.query, {
                 current: {
                     conversationId,
@@ -108,13 +126,16 @@ export function createTools(deps) {
             // Stable score order within first-seen conversation groups.
             const groups = new Map();
             for (const hit of selected) {
-                const group = groups.get(hit.item.conversationId) ?? [];
+                const conversation = hit.item.conversationId ?? 0;
+                const group = groups.get(conversation) ?? [];
                 group.push(hit);
-                groups.set(hit.item.conversationId, group);
+                groups.set(conversation, group);
             }
             const lines = [...groups.values()].flatMap((group) => group.map((hit) => {
                 const day = new Date(hit.item.at).toISOString().slice(0, 10);
-                const title = hit.conversationTitle ?? `conversation ${hit.item.conversationId}`;
+                const title = hit.item.kind === "doc"
+                    ? "knowledge"
+                    : (hit.conversationTitle ?? `conversation ${hit.item.conversationId}`);
                 return `[${day}] ${title} — ${hit.snippet} (${hit.handle})`;
             }));
             return output(lines.join("\n"));
@@ -144,10 +165,19 @@ export function createTools(deps) {
                 const text = deps.artifactStore.read(args.handle, args.offset ?? 0, length);
                 return text === undefined ? output("Not available here.") : output(text);
             }
-            if (item.entryId === null)
+            if (args.handle.startsWith("d:")) {
+                if (item.doc === null)
+                    return output("Not available here.");
+                const length = Math.min(args.length ?? OPEN_LIMIT, OPEN_LIMIT);
+                const text = deps.db.docText(item.doc, args.offset ?? 0, length);
+                return text === undefined ? output("Not available here.") : output(text);
+            }
+            if (item.entryId === null || item.conversationId === null) {
                 return output("Not available here.");
+            }
+            const source = item.conversationId;
             const page = await deps
-                .entries(item.conversationId, {
+                .entries(source, {
                 minEntryId: Math.max(1, item.entryId - 3),
                 maxEntryId: item.entryId + 3,
                 order: "ascending",
@@ -155,7 +185,7 @@ export function createTools(deps) {
                 .catch(() => undefined);
             if (page === undefined)
                 return output("Not available here.");
-            const nearby = deps.db.itemsForEntries(item.conversationId, page.items.map((entry) => entry.id));
+            const nearby = deps.db.itemsForEntries(source, page.items.map((entry) => entry.id));
             for (const candidate of nearby) {
                 if ((await permitted(deps, current, candidate, provider)) === undefined) {
                     return output("Not available here.");
@@ -174,5 +204,12 @@ async function itemForHandle(db, handle) {
         return db.item(Number(handle.slice(2)));
     if (handle.startsWith("a:"))
         return db.itemByArtifact(handle);
+    if (handle.startsWith("d:")) {
+        // User-owned documents have no conversation; the owner is the audience.
+        const id = Number(handle.slice(2));
+        if (!Number.isInteger(id))
+            return undefined;
+        return db.itemByDoc(id);
+    }
     return undefined;
 }

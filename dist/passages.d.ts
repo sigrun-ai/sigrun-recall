@@ -9,5 +9,10 @@ export interface Passage {
     text: string;
     at: number;
 }
+/** Split text at the latest paragraph, then line, boundary before the limit. */
+export declare function splitText(text: string): {
+    text: string;
+    offset: number;
+}[];
 /** Extract bounded, searchable passages from an entry's model messages. */
 export declare function passagesOf(entry: EntryRecord): Passage[];

@@ -16,12 +16,22 @@ import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js"
 import { captureConversation } from "./capture.js";
 import { resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
+import { createPublishedHooks } from "./hooks.js";
 import { createSearcher } from "./search.js";
 import { createRoutes } from "./route.js";
 import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
 import { applyRecall } from "./inject.js";
 import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vectors.js";
+
+export {
+	RecallIndexInput,
+	RecallIndexOutput,
+	RecallRemoveInput,
+	RecallRemoveOutput,
+	RecallSearchInput,
+	RecallSearchOutput,
+} from "./hooks.js";
 
 export interface FactoryDeps {
 	openDb?: (path: string) => RecallDb;
@@ -232,6 +242,12 @@ export default function createRecall(
 
 	return {
 		extension: defineExtension(extension),
+		publishedHooks: createPublishedHooks({
+			db,
+			searcher: () => getServices().searcher,
+			meta,
+			now: deps.now ?? Date.now,
+		}),
 		jobs: [
 			{
 				name: "backfill",

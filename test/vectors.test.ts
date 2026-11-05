@@ -53,6 +53,7 @@ describe("vectors", () => {
       offset: 0,
       length: 4,
       artifact: null,
+      doc: null,
       job: false,
       cls,
       at: 1_700_000_000_000,
@@ -139,6 +140,7 @@ describe("vectors", () => {
         offset: 0,
         length: 21,
         artifact: null,
+        doc: null,
         job: false,
         cls: "normal",
         at: 1_700_000_000_000,
@@ -163,6 +165,68 @@ describe("vectors", () => {
     const hits = await searcher.search("dog surgery", context(), 10);
     expect(hits).toHaveLength(1);
     expect(hits[0]?.item.id).toBe(1);
+    db.close();
+  });
+
+  it("a pending local-only doc is not embedded by a non-local endpoint", async () => {
+    const db = RecallDb.open(":memory:");
+    db.upsertDoc(
+      {
+        provider: "acme-local",
+        docId: "d1",
+        owner: "alice",
+        kind: "record",
+        title: "Northside Vet research",
+        url: null,
+        at: 1_700_000_000_000,
+        cls: "local-only",
+        text: "the harbourside bakery sells bread",
+        sources: [],
+      },
+      1_700_000_000_000,
+    );
+    const embed = vi.fn(async (_texts: readonly string[]) => [
+      new Float32Array([1]),
+    ]);
+    await embedPending(
+      db,
+      { local: false, embed },
+      createSqliteVectorIndex(db),
+      async () => undefined,
+    );
+    expect(embed).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("a pending normal doc embeds through the sweep with its doc text", async () => {
+    const db = RecallDb.open(":memory:");
+    db.upsertDoc(
+      {
+        provider: "acme-local",
+        docId: "d1",
+        owner: "alice",
+        kind: "record",
+        title: "Northside Vet research",
+        url: null,
+        at: 1_700_000_000_000,
+        cls: "normal",
+        text: "the harbourside bakery sells bread",
+        sources: [],
+      },
+      1_700_000_000_000,
+    );
+    const embed = vi.fn(async (_texts: readonly string[]) => [
+      new Float32Array([1]),
+    ]);
+    const index = createSqliteVectorIndex(db);
+    await embedPending(
+      db,
+      { local: false, embed },
+      index,
+      async () => undefined,
+    );
+    expect(embed).toHaveBeenCalledWith(["the harbourside bakery sells bread"]);
+    expect(db.listUnembeddedItems(10, false)).toHaveLength(0);
     db.close();
   });
 });

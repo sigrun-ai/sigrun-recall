@@ -55,7 +55,20 @@ async function permitted(
 	provider: string | undefined,
 ): Promise<SessionMeta | undefined> {
 	if (!audienceCovers(current, { owner: item.owner ?? undefined })) return undefined;
-	const meta = await deps.meta(item.conversationId).catch(() => undefined);
+	// User-owned documents have no conversation; the owner is the audience.
+	const meta =
+		item.conversationId === null
+			? item.owner === null
+				? undefined
+				: ({
+						pinned: false,
+						tagged: [],
+						archived: false,
+						draft: { text: "", attachments: [] },
+						source: "doc",
+						owner: item.owner,
+					} satisfies SessionMeta)
+			: await deps.meta(item.conversationId).catch(() => undefined);
 	if (meta === undefined || meta.internal === true || !audienceCovers(current, meta)) {
 		return undefined;
 	}
@@ -107,7 +120,13 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 			query: Type.String(),
 			since: Type.Optional(Type.String()),
 			until: Type.Optional(Type.String()),
-			kind: Type.Optional(Type.Union([Type.Literal("conversation"), Type.Literal("page")])),
+			kind: Type.Optional(
+				Type.Union([
+					Type.Literal("conversation"),
+					Type.Literal("page"),
+					Type.Literal("record"),
+				]),
+			),
 			conversation: Type.Optional(Type.Number()),
 		}),
 		replay: "safe",
@@ -120,7 +139,9 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 					? (["turn", "tool"] as const)
 					: args.kind === "page"
 						? (["artifact"] as const)
-						: undefined;
+						: args.kind === "record"
+							? (["doc"] as const)
+							: undefined;
 			const hits = await deps.searcher.search(
 				args.query,
 				{
@@ -146,14 +167,18 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 			// Stable score order within first-seen conversation groups.
 			const groups = new Map<number, Hit[]>();
 			for (const hit of selected) {
-				const group = groups.get(hit.item.conversationId) ?? [];
+				const conversation = hit.item.conversationId ?? 0;
+				const group = groups.get(conversation) ?? [];
 				group.push(hit);
-				groups.set(hit.item.conversationId, group);
+				groups.set(conversation, group);
 			}
 			const lines = [...groups.values()].flatMap((group) =>
 				group.map((hit) => {
 					const day = new Date(hit.item.at).toISOString().slice(0, 10);
-					const title = hit.conversationTitle ?? `conversation ${hit.item.conversationId}`;
+					const title =
+						hit.item.kind === "doc"
+							? "knowledge"
+							: (hit.conversationTitle ?? `conversation ${hit.item.conversationId}`);
 					return `[${day}] ${title} — ${hit.snippet} (${hit.handle})`;
 				}),
 			);
@@ -186,10 +211,19 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 				const text = deps.artifactStore.read(args.handle, args.offset ?? 0, length);
 				return text === undefined ? output("Not available here.") : output(text);
 			}
-			if (item.entryId === null) return output("Not available here.");
+			if (args.handle.startsWith("d:")) {
+				if (item.doc === null) return output("Not available here.");
+				const length = Math.min(args.length ?? OPEN_LIMIT, OPEN_LIMIT);
+				const text = deps.db.docText(item.doc, args.offset ?? 0, length);
+				return text === undefined ? output("Not available here.") : output(text);
+			}
+			if (item.entryId === null || item.conversationId === null) {
+				return output("Not available here.");
+			}
+			const source = item.conversationId;
 			const page = await deps
 				.entries(
-				item.conversationId,
+				source,
 				{
 					minEntryId: Math.max(1, item.entryId - 3),
 					maxEntryId: item.entryId + 3,
@@ -201,7 +235,7 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 				.catch(() => undefined);
 			if (page === undefined) return output("Not available here.");
 			const nearby = deps.db.itemsForEntries(
-				item.conversationId,
+				source,
 				page.items.map((entry) => entry.id),
 			);
 			for (const candidate of nearby) {
@@ -220,5 +254,11 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 async function itemForHandle(db: RecallDb, handle: string): Promise<ItemRow | undefined> {
 	if (handle.startsWith("r:")) return db.item(Number(handle.slice(2)));
 	if (handle.startsWith("a:")) return db.itemByArtifact(handle);
+	if (handle.startsWith("d:")) {
+		// User-owned documents have no conversation; the owner is the audience.
+		const id = Number(handle.slice(2));
+		if (!Number.isInteger(id)) return undefined;
+		return db.itemByDoc(id);
+	}
 	return undefined;
 }

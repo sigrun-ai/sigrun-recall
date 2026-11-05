@@ -42,6 +42,7 @@ export function createArtifactStore(db, dir) {
                     offset,
                     length: bytes.length,
                     artifact: handle,
+                    doc: null,
                     job: false,
                     cls: "normal",
                     at: meta.at,
