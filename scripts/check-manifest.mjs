@@ -70,7 +70,11 @@ const HOST_MODULE_PINS = {
 	"@earendil-works/pi-durable": "1.4.0",
 	"@earendil-works/pi-ai": "1.4.0",
 	"@earendil-works/chord": "1.4.0",
-	"@sigrun/shared": "0.5.0",
+	// The accepted shared range: every line since the value imports
+	// landed (accessOf), through the current 0.8.0. A bare "0.5.0" pinned
+	// the FIRST line only, so a host running any later 0.x read as
+	// unaccepted even though the runtime contract is unchanged.
+	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0",
 };
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
