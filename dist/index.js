@@ -12,6 +12,7 @@ import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
 import { applyRecall } from "./inject.js";
 import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vectors.js";
+export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOutput, RecallSearchInput, RecallSearchOutput, } from "./hooks.js";
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.

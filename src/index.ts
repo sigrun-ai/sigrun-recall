@@ -24,6 +24,15 @@ import { createEmbedder } from "./embed.js";
 import { applyRecall } from "./inject.js";
 import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vectors.js";
 
+export {
+	RecallIndexInput,
+	RecallIndexOutput,
+	RecallRemoveInput,
+	RecallRemoveOutput,
+	RecallSearchInput,
+	RecallSearchOutput,
+} from "./hooks.js";
+
 export interface FactoryDeps {
 	openDb?: (path: string) => RecallDb;
 	now?: () => number;

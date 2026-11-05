@@ -2,13 +2,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Type } from "@earendil-works/pi-ai";
 import type { PublishedHookCall } from "@sigrun/sigrun/extension";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
+import { Compile } from "typebox/compile";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RecallDb } from "../src/db.js";
+import { RecallDb, type ItemRow } from "../src/db.js";
 import { createPublishedHooks } from "../src/hooks.js";
-import createRecall from "../src/index.js";
+import createRecall, { RecallIndexInput } from "../src/index.js";
 import { createSearcher } from "../src/search.js";
 
 const NOW = Date.parse("2026-11-02T12:00:00Z");
@@ -57,7 +59,29 @@ function setup(options: { localProviders?: readonly string[] } = {}) {
     now: () => NOW,
   });
   const byName = new Map(hooks.map((hook) => [hook.name, hook]));
-  return { hooks, byName };
+  return { db, hooks, byName };
+}
+
+function item(
+  overrides: Partial<Omit<ItemRow, "id">> = {},
+): Omit<ItemRow, "id"> {
+  return {
+    conversationId: 1,
+    owner: "alice",
+    kind: "turn",
+    entryId: 10,
+    messageIndex: 0,
+    blockIndex: 0,
+    offset: 0,
+    length: 27,
+    artifact: null,
+    doc: null,
+    job: false,
+    cls: "normal",
+    at: NOW,
+    title: null,
+    ...overrides,
+  };
 }
 
 function call(overrides: Partial<PublishedHookCall> = {}): PublishedHookCall {
@@ -138,6 +162,27 @@ describe("published hooks", () => {
       )) as { handle: string; class: string };
     // The unknown handle d:9999 is ignored; the local-only source tightens the class.
     expect(cited.class).toBe("local-only");
+  });
+
+  it("index with a source citing a tainted r: handle returns class local-only", async () => {
+    const { byName, db } = setup();
+    const taintedId = db.insertItem(
+      item({ cls: "local-only" }),
+      "the hidden apothecary recipe",
+    )!;
+    const cited = (await byName
+      .get("recall.index")!
+      .run(card({ sources: [`r:${taintedId}`] }), call())) as {
+      class: string;
+    };
+    expect(cited.class).toBe("local-only");
+  });
+
+  it("the index input schema rejects a non-ISO date", () => {
+    // Same Compile call shape core's registry uses; also pins the root re-export.
+    const schema = Compile(Type.Object({ date: RecallIndexInput.properties.date }));
+    expect(schema.Check({ date: "not-a-date" })).toBe(false);
+    expect(schema.Check({ date: DATE })).toBe(true);
   });
 
   it("index is idempotent: same payload → changed false", async () => {

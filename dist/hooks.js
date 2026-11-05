@@ -56,20 +56,29 @@ function requireUser(call, name) {
         throw new Error(`${name} needs a user`);
     return call.user;
 }
-/** Resolve a "d:<docs.id>" handle to its item; every other handle is ignored. */
-function docItemByHandle(db, handle) {
-    if (!handle.startsWith("d:"))
-        return undefined;
-    const id = Number(handle.slice(2));
-    if (!Number.isInteger(id))
-        return undefined;
-    return db.itemByDoc(id);
+/** Resolve a handle to its item; unknown handles and forms are ignored. */
+function itemByHandle(db, handle) {
+    if (handle.startsWith("d:")) {
+        const id = Number(handle.slice(2));
+        if (!Number.isInteger(id))
+            return undefined;
+        return db.itemByDoc(id);
+    }
+    if (handle.startsWith("r:")) {
+        const id = Number(handle.slice(2));
+        if (!Number.isInteger(id))
+            return undefined;
+        return db.item(id);
+    }
+    if (handle.startsWith("a:"))
+        return db.itemByArtifact(handle);
+    return undefined;
 }
 /** Strictest class wins; unknown handles are ignored. */
 function taintedClass(db, cls, sources) {
     let result = cls;
     for (const handle of sources) {
-        if (docItemByHandle(db, handle)?.cls === "local-only")
+        if (itemByHandle(db, handle)?.cls === "local-only")
             result = "local-only";
     }
     return result;
