@@ -5,6 +5,7 @@ import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js"
 import { captureConversation } from "./capture.js";
 import { resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
+import { createPublishedHooks } from "./hooks.js";
 import { createSearcher } from "./search.js";
 import { createRoutes } from "./route.js";
 import { createTools } from "./tools.js";
@@ -187,6 +188,12 @@ export default function createRecall(host, deps = {}) {
     };
     return {
         extension: defineExtension(extension),
+        publishedHooks: createPublishedHooks({
+            db,
+            searcher: () => getServices().searcher,
+            meta,
+            now: deps.now ?? Date.now,
+        }),
         jobs: [
             {
                 name: "backfill",

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+<!-- TODO: pin `@sigrun/sigrun` to the release carrying published hooks when it lands. -->
+
+### Added
+
+- Published hooks `recall.index`, `recall.remove` and `recall.search`: the extension-to-extension seam that lets other extensions store, delete and search user-owned documents. Documents are keyed `(caller, user, id)`; a stored document's class is the strictest of its declared class and the classes of its existing `sources`; search without a user returns no hits and without a model surfaces only `normal` items.
+
 ## [0.1.4] - 2026-11-04
 
 ### Fixed

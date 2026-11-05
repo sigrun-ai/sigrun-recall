@@ -36,6 +36,18 @@ Trigram search cannot match CJK substrings shorter than three characters. Use at
 
 ## Development and uninstall
 
+## Published hooks
+
+Recall publishes three extension-to-extension hooks (schema-validated through sigrun's core registry). Other extensions call them by name; payloads are typebox schemas exported from `src/hooks.ts`.
+
+- `recall.index` — input `{ id (1..256), kind (1..64), title (≤512), text, date (ISO), url?, class?: "normal" | "local-only", sources? (≤100 handles) }`; output `{ handle, class, changed }`. Stores a user-owned document and returns a `d:<id>` handle. Repeating an identical payload leaves the store untouched and returns `changed: false`. The stored class is the strictest of `class` (default `normal`) and the classes of any `sources` handles that exist (unknown handles are ignored).
+- `recall.remove` — input `{ id }`; output `{ removed }`. Deletes the document and its index rows.
+- `recall.search` — input `{ query, limit? (1..50, default 10), kinds? (turn|tool|artifact|doc), model?: { provider, modelId } }`; output `{ hits: [{ handle, kind, title, date, snippet, class, provider?, id? }] }`. Doc hits carry `provider` (the storing extension's slug) and `id`. Job items are included; the calling conversation is not excluded. Without a `model`, only `normal` items surface; a `model` whose provider is in the owner's `localProviders` also sees `local-only` items. When a `conversationId` is present, access follows that conversation's live sharing; otherwise the call acts as a private conversation of the user.
+
+Identity: `recall.index` and `recall.remove` require a user and fail with `"recall.<name> needs a user"` when the caller has none; `recall.search` without a user returns `{ hits: [] }`. Documents are keyed `(caller extension slug, user, id)`, so one extension cannot overwrite another's records, and a doc hit's `provider` names the extension that stored it.
+
+## Development and uninstall
+
 ```sh
 npm install
 npm test
