@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { PublishedHookCall } from "@sigrun/sigrun/extension";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import { Compile } from "typebox/compile";

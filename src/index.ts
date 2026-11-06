@@ -18,6 +18,7 @@ import { resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
 import { createSearcher } from "./search.js";
+import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
 import { createTools } from "./tools.js";
 import { createEmbedder } from "./embed.js";
@@ -186,6 +187,10 @@ export default function createRecall(
 			hooks: [
 				hook(ToolTask, {
 					afterTool: async (call, result, api) => {
+						// pi-durable 1.5.0 (spec §3.2-b): the harness runs afterTool
+						// on results IT wrote for calls that never executed —
+						// nothing to externalize from a call that never ran.
+						if (!toolExecuted(result)) return undefined;
 						try {
 							const meta = await host.conversations.meta(api.conversationId);
 							if (meta.internal === true) return undefined;

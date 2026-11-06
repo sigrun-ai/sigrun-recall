@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 import { audienceCovers } from "./audience.js";
 import { mayRead } from "./policy.js";

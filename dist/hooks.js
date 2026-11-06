@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 export const RecallIndexInput = Type.Object({
     id: Type.String({ minLength: 1, maxLength: 256 }),
     kind: Type.String({ minLength: 1, maxLength: 64 }),
