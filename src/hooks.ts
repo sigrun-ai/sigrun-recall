@@ -1,4 +1,4 @@
-import { Type, type Static } from "@earendil-works/pi-ai";
+import { Type, type Static } from "typebox";
 import type { PublishedHook, PublishedHookCall } from "@sigrun/sigrun/extension";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 

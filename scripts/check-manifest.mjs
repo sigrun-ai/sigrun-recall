@@ -61,20 +61,29 @@ check(
 check(typeof manifest.bugs?.url === "string", "package.json: bugs.url absent");
 check(typeof manifest.homepage === "string", "package.json: homepage absent");
 
-/** Every host module an extension imports must be a peer. This package
- * develops against, and accepts, exactly the 1.4.0 host family.
+/** Every host module an extension imports must be a peer. The family
+ * develops against the pi-durable 1.5.0 host family (peers accept
+ * ~1.5.0; devDeps pin 1.5.0 exactly), keeping one type-compatible copy
+ * of chord/pi-ai/pi-durable. typebox is pi-ai's own exact dependency
+ * (1.3.27) — the host-linked single copy extensions see.
  * @sigrun/shared ships runtime VALUE imports (accessOf) — it rides as a
  * peer so consumers' installs resolve it, with the dev file: link to
  * core's workspace (the ext-gateway family posture). */
 const HOST_MODULE_PINS = {
-	"@earendil-works/pi-durable": "1.4.0",
-	"@earendil-works/pi-ai": "1.4.0",
-	"@earendil-works/chord": "1.4.0",
+	"@earendil-works/pi-durable": "~1.5.0",
+	"@earendil-works/pi-ai": "~1.5.0",
+	"@earendil-works/chord": "~1.5.0",
+	typebox: "1.3.27",
 	// The accepted shared range: every line since the value imports
-	// landed (accessOf), through the current 0.8.0. A bare "0.5.0" pinned
-	// the FIRST line only, so a host running any later 0.x read as
-	// unaccepted even though the runtime contract is unchanged.
-	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0",
+	// landed (accessOf), through the live 0.9.x line and the 0.10.x
+	// line this family develops against (core 0.10.x).
+	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0",
+};
+/** Development happens against pi-durable 1.5.0 (exact). */
+const DEV_PIN_OVERRIDES = {
+	"@earendil-works/chord": "1.5.0",
+	"@earendil-works/pi-ai": "1.5.0",
+	"@earendil-works/pi-durable": "1.5.0",
 };
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
@@ -97,7 +106,7 @@ for (const [module, spec] of Object.entries(peers)) {
 		);
 		continue;
 	}
-	const devPin = pin;
+	const devPin = DEV_PIN_OVERRIDES[module] ?? pin;
 	check(
 		devDeps[module] === devPin,
 		`package.json: devDependencies["${module}"] must mirror the dev pin at exact "${devPin}" (got ${JSON.stringify(devDeps[module])})`,

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.2.0] - Unreleased
 
+### Changed
+
+- peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
+
+### Fixed
+
+- afterTool skips results of calls that never ran (pi-durable 1.5.0 hook semantics).
+
+
 <!-- Pin note: the published-hooks seam requires core ≥ 0.9.0 (the
      release carrying `host.publishedHooks`). This repo's dev link tracks
      core's main directly; a published install needs core 0.9.0+ for the
