@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.10.0).
+- peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ### Fixed
 
