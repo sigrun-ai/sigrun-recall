@@ -164,6 +164,18 @@ describe("search", () => {
     ).toEqual([]);
   });
 
+  it("deleted conversations are not searchable", async () => {
+    const { searcher, metas } = setup("clinic");
+    metas.set(1, meta({ deleted: true }));
+    expect(await searcher.search("clinic", context(), 10)).toEqual([]);
+  });
+
+  it("archived conversations stay searchable", async () => {
+    const { searcher, metas } = setup("clinic");
+    metas.set(1, meta({ archived: true }));
+    expect(await searcher.search("clinic", context(), 10)).toHaveLength(1);
+  });
+
   it("job items are excluded unless includeJobs", async () => {
     const { searcher } = setup("job clinic", { item: { job: true } });
     expect(await searcher.search("clinic", context(), 10)).toEqual([]);

@@ -208,6 +208,21 @@ describe("automatic recall", () => {
     db.close();
   });
 
+  it("a stored block is omitted after its source conversation is deleted", async () => {
+    const { db, deps } = setup();
+    const live = meta();
+    const sourceDeps = {
+      ...deps,
+      sourceMeta: async () => live,
+      sourceLocalProviders: async () => ["acme-local"],
+    };
+    const first = await applyRecall([user("question")], sourceDeps);
+    expect(texts(first).at(-1)).toContain("Recalled from past conversations");
+    live.deleted = true;
+    expect(await applyRecall([user("question")], sourceDeps)).toBeUndefined();
+    db.close();
+  });
+
   it("renderBlock keeps total snippet text ≤ 1536 bytes", () => {
     const block = renderBlock([
       hit("normal", "x".repeat(1000)),

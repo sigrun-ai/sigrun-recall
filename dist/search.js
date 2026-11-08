@@ -82,6 +82,7 @@ export function createSearcher(deps) {
                 const meta = metaPromise === undefined ? undefined : await metaPromise;
                 if (meta === undefined ||
                     meta.internal === true ||
+                    meta.deleted === true ||
                     !audienceCovers(ctx.current, meta)) {
                     continue;
                 }

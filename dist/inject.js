@@ -106,6 +106,7 @@ export async function applyRecall(messages, deps) {
             const source = await deps.sourceMeta(item.conversationId).catch(() => undefined);
             if (source === undefined ||
                 source.internal === true ||
+                source.deleted === true ||
                 !audienceCovers(deps.meta, source) ||
                 !mayRead(item.cls, deps.model, providers)) {
                 allowed = false;

@@ -196,6 +196,13 @@ describe("recall tools", () => {
     expect(text).toBe("Not available here.");
   });
 
+  it('recall_open refuses a deleted conversation with "Not available here."', async () => {
+    const { tools, metas } = await setup();
+    metas.set(1, meta({ deleted: true }));
+    const text = await execute(tools, "recall_open", { handle: "r:1" });
+    expect(text).toBe("Not available here.");
+  });
+
   it("recall_open redacts neighboring text and enforces neighboring confidentiality", async () => {
     const { db, tools, entries } = await setup();
     entries.push(message(2, 1, "assistant", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"));
