@@ -139,6 +139,7 @@ export async function applyRecall(
 			if (
 				source === undefined ||
 				source.internal === true ||
+				source.deleted === true ||
 				!audienceCovers(deps.meta, source) ||
 				!mayRead(item.cls, deps.model, providers)
 			) {
