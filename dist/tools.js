@@ -34,7 +34,7 @@ async function permitted(deps, current, item, provider) {
                 owner: item.owner,
             }
         : await deps.meta(item.conversationId).catch(() => undefined);
-    if (meta === undefined || meta.internal === true || !audienceCovers(current, meta)) {
+    if (meta === undefined || meta.internal === true || meta.deleted === true || !audienceCovers(current, meta)) {
         return undefined;
     }
     const providers = item.owner === null ? [] : await deps.localProviders(item.owner).catch(() => []);

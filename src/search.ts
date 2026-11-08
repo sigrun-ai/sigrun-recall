@@ -127,6 +127,7 @@ export function createSearcher(deps: {
 				if (
 					meta === undefined ||
 					meta.internal === true ||
+					meta.deleted === true ||
 					!audienceCovers(ctx.current, meta)
 				) {
 					continue;

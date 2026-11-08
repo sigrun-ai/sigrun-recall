@@ -69,7 +69,7 @@ async function permitted(
 						owner: item.owner,
 					} satisfies SessionMeta)
 			: await deps.meta(item.conversationId).catch(() => undefined);
-	if (meta === undefined || meta.internal === true || !audienceCovers(current, meta)) {
+	if (meta === undefined || meta.internal === true || meta.deleted === true || !audienceCovers(current, meta)) {
 		return undefined;
 	}
 	const providers = item.owner === null ? [] : await deps.localProviders(item.owner).catch(() => []);
