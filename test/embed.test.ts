@@ -91,7 +91,14 @@ describe("embed", () => {
       { itemId: 3, score: 1 / Math.sqrt(2) },
     ]);
     expect(read).toHaveBeenCalled();
-    for (const call of read.mock.calls) expect(call[1]).toBeLessThanOrEqual(2);
+    // listVectorsPage(model, after, limit): the page size is argument 2.
+    // Three rows at page size 2 means two pages: a full one mid-scan and a
+    // short final one. Assert the bound on EVERY call (never above pageSize)
+    // and pin the mid-scan call to exactly 2, so the assertion cannot go
+    // vacuous again if the signature moves.
+    for (const call of read.mock.calls) expect(call[2]).toBeLessThanOrEqual(2);
+    expect(read.mock.calls[0]![2]).toBe(2);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it("an aborted signal stops the scan between pages and returns the partial best", () => {

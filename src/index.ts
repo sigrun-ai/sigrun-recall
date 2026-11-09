@@ -305,7 +305,11 @@ export default async function createRecall(
 						db: db(),
 						meta: (id) => host.conversations.meta(id as ConversationId),
 						now: deps.now ?? Date.now,
-						...semanticDeps,
+						// Named fields, not `...semanticDeps`: capture owns `embedder`
+						// and `index` only (the model identity and the query timeout
+						// are search-path concerns).
+						embedder: semanticDeps.embedder,
+						index: semanticDeps.index,
 						trackEmbedding,
 					},
 					event.conversationId,
