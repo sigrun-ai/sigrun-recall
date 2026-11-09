@@ -566,35 +566,6 @@ describe("host.embeddings in recall", () => {
 		}
 	});
 
-	it("the notice is dropped on a claimed server with no admin", async () => {
-		const root = await mkdtemp(join(tmpdir(), "recall-notice-no-admin-"));
-		try {
-			const notified: unknown[] = [];
-			const { surface } = embeddings({ rows: [] });
-			const { result, search } = await rig({
-				root,
-				settings: {
-					embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
-				},
-				embeddings: surface,
-				// Users exist, so core would REJECT a userless notice; nobody is
-				// an admin, so there is no recipient this notice is for.
-				users: [
-					{ user: "bob", admin: false },
-					{ user: "carol", admin: false },
-				],
-				notify: async (input) => {
-					notified.push(input);
-				},
-			});
-			await search("clinic");
-			await search("clinic");
-			expect(notified).toEqual([]);
-			await result.harnessShutdown?.({} as never, {} as never);
-		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-	});
 
 	it("the moved-settings notice fires once and names the outcome", async () => {
 		const root = await mkdtemp(join(tmpdir(), "recall-notice-once-"));

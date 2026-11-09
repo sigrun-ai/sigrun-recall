@@ -41,8 +41,8 @@ export function embeddingsMovedNotice(
 ): Pick<ExtensionNoticeInput, "kind" | "title" | "body"> | undefined {
 	const legacy = legacyEmbeddingSettings(raw);
 	if (legacy === undefined) return undefined;
-	const label = migrationLabel(raw);
-	// Model and endpoint come from operator config, so bound them: the body
+	const label = migrationLabel(raw)?.slice(0, 200);
+	// Model, label and endpoint come from operator config, so bound them: the body
 	// cap is 2000 characters and `notify` REJECTS anything longer, which
 	// would lose the notice entirely.
 	const model = legacy.model.slice(0, 200);
