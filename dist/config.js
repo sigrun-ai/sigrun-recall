@@ -1,5 +1,4 @@
 const DEFAULT_EXTERNALIZE_BYTES = 24_576;
-const DEFAULT_EMBEDDING_TIMEOUT_MS = 800;
 function warnInvalid(setting) {
     console.warn(`recall: invalid ${setting} setting; using its default`);
 }
@@ -11,43 +10,28 @@ function positiveInteger(value, fallback, setting) {
     warnInvalid(setting);
     return fallback;
 }
-function nonEmptyString(value, setting) {
-    if (typeof value === "string" && value !== "")
-        return value;
-    warnInvalid(setting);
-    return undefined;
-}
-function embeddingSettings(value) {
-    if (value === undefined || value === null)
-        return undefined;
-    if (typeof value !== "object" || Array.isArray(value)) {
-        warnInvalid("embedding");
-        return undefined;
-    }
-    const raw = value;
-    const url = nonEmptyString(raw.url, "embedding.url");
-    const model = nonEmptyString(raw.model, "embedding.model");
-    if (url === undefined || model === undefined)
-        return undefined;
-    if (raw.local !== undefined && typeof raw.local !== "boolean") {
-        warnInvalid("embedding.local");
-    }
-    return {
-        url,
-        model,
-        local: typeof raw.local === "boolean" ? raw.local : false,
-        timeoutMs: positiveInteger(raw.timeoutMs, DEFAULT_EMBEDDING_TIMEOUT_MS, "embedding.timeoutMs"),
-    };
-}
 export async function resolveSettings(store) {
     const raw = await store.get();
-    const settings = {
+    return {
         externalizeBytes: positiveInteger(raw.externalizeBytes, DEFAULT_EXTERNALIZE_BYTES, "externalizeBytes"),
     };
-    const embedding = embeddingSettings(raw.embedding);
-    if (embedding !== undefined)
-        settings.embedding = embedding;
-    return settings;
+}
+/**
+ * The model the OLD (pre-provider) `embedding` settings block named, if it
+ * is still on disk. Recall no longer reads that block for anything except
+ * two migration concerns: the v4 vector label (below) and the
+ * one-per-boot "embeddings moved to a provider" notice.
+ */
+export function legacyEmbeddingSettings(raw) {
+    const embedding = raw.embedding;
+    if (typeof embedding !== "object" || embedding === null)
+        return undefined;
+    const { url, model } = embedding;
+    if (typeof url !== "string" || typeof model !== "string")
+        return undefined;
+    if (model === "")
+        return undefined;
+    return { url, model };
 }
 /**
  * The model label the v4 vector migration stamps on existing rows, from
@@ -59,42 +43,17 @@ export async function resolveSettings(store) {
  * and are re-embedded.
  */
 export function migrationLabel(raw) {
-    const embedding = raw.embedding;
-    if (typeof embedding !== "object" || embedding === null)
-        return undefined;
-    const { url, model } = embedding;
-    if (typeof url !== "string" || typeof model !== "string" || model === "")
+    const legacy = legacyEmbeddingSettings(raw);
+    if (legacy === undefined)
         return undefined;
     let hostname;
     try {
-        hostname = new URL(url).hostname;
+        hostname = new URL(legacy.url).hostname;
     }
     catch {
         return undefined;
     }
-    return hostname === "api.openai.com" ? `openai/${model}` : undefined;
-}
-/**
- * The model identity the legacy (pre-provider) embedder's vectors carry,
- * from the LIVE settings: the migration label where that rule applies
- * (`openai/<model>` against [OI]'s own endpoint, so an upgraded install
- * finds its inherited rows), else a host-qualified name no provider model
- * can collide with — two endpoints never share a vector space, even when
- * they serve the same model NAME.
- *
- * Task 9 replaces the legacy embedder with `host.embeddings`; this naming
- * only has to keep today's vectors honest until then.
- */
-export function legacyEmbeddingModel(embedding) {
-    const label = migrationLabel({ embedding });
-    if (label !== undefined)
-        return label;
-    try {
-        return `legacy/${new URL(embedding.url).hostname}/${embedding.model}`;
-    }
-    catch {
-        return `legacy/${embedding.model}`;
-    }
+    return hostname === "api.openai.com" ? `openai/${legacy.model}` : undefined;
 }
 export async function resolveUserSettings(store) {
     const raw = await store.get();

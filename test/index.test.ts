@@ -76,14 +76,7 @@ describe("createRecall", () => {
           {
             stores: {
               paths: { data: root },
-              settings: {
-                get: async () => ({
-                  embedding: {
-                    url: "https://embeddings.example.invalid",
-                    model: "acme-embed-1",
-                  },
-                }),
-              },
+              settings: { get: async () => ({}) },
               secrets: { get: async () => undefined },
             },
             conversations: {
@@ -94,6 +87,11 @@ describe("createRecall", () => {
                 draft: { text: "", attachments: [] },
                 source: "test",
               }),
+            },
+            embeddings: {
+              list: async () => [{ model: "acme-embed/embed-1", provider: "acme-embed", dimensions: 2, local: false, default: true, status: "ready" }],
+              // Never settles: one capture stays pending forever.
+              embed: () => new Promise<never>(() => {}),
             },
           } as never,
           {
@@ -106,8 +104,6 @@ describe("createRecall", () => {
               };
               return db;
             },
-            // Never settles: one capture stays pending forever.
-            fetchImpl: () => new Promise<Response>(() => {}),
           },
         );
         const entry = {
@@ -146,13 +142,14 @@ describe("createRecall", () => {
     },
   );
 
-  it("a transient settings failure degrades search to lexical and a later call retries", async () => {
+  it("a transient model-list failure degrades search to lexical and a later call retries", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
-    // Two failures: the factory reads settings once for the v4 migration
-    // label (best effort, silent), then the first search call degrades and
-    // the second succeeds — one logged degradation.
+    // TWO failures: the factory reads settings once for the v4 migration
+    // label (best effort, silent), then the first search call's model list
+    // degrades and the second succeeds — one logged degradation.
     let failures = 2;
     const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
+    let listFailures = 1;
     const result = await createRecall(
       {
         stores: {
@@ -163,9 +160,7 @@ describe("createRecall", () => {
                 failures -= 1;
                 throw new Error("store temporarily unavailable");
               }
-              return {
-                embedding: { url: "https://embeddings.example.invalid", model: "acme-embed-1" },
-              };
+              return {};
             },
           },
           secrets: { get: async () => undefined },
@@ -182,11 +177,24 @@ describe("createRecall", () => {
           }),
           entry: async () => undefined,
         },
+        embeddings: {
+          list: async () => {
+            if (listFailures > 0) {
+              listFailures -= 1;
+              throw new Error("the registry is still booting");
+            }
+            return [
+              { model: "acme-embed/embed-1", provider: "acme-embed", dimensions: 2, local: false, default: true, status: "ready" },
+            ];
+          },
+          embed: async (texts: readonly string[]) => ({
+            ok: true,
+            model: "acme-embed/embed-1",
+            dimensions: 2,
+            vectors: texts.map(() => new Float32Array([1])),
+          }),
+        },
       } as never,
-      {
-        fetchImpl: (async () =>
-          Response.json({ data: [{ embedding: [1] }] })) as never,
-      },
     );
     void embed;
     const errors: unknown[] = [];

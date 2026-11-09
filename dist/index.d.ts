@@ -4,8 +4,6 @@ export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOut
 export interface FactoryDeps {
     openDb?: (path: string, labelModel?: string) => RecallDb;
     now?: () => number;
-    /** Test seam: fetch implementation for the embeddings endpoint. */
-    fetchImpl?: typeof fetch;
 }
 /**
  * The loader injects the host only when factory.length > 0: keep the host

@@ -1,9 +1,46 @@
-import type { Embedder } from "./embed.js";
+import type { EntryRecord } from "@earendil-works/pi-durable";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
+
 import type { RecallDb } from "./db.js";
 import { passagesOf } from "./passages.js";
 import { redact } from "./redact.js";
-import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { VectorArm } from "./search.js";
+
+/** One row of `host.embeddings.list()` (core's registry shape). */
+export interface EmbeddingModelRow {
+	/** `provider/model`. */
+	readonly model: string;
+	readonly provider: string;
+	readonly dimensions: number;
+	/** Core's gate: the admin listed it AND its provider did not veto. */
+	readonly local: boolean;
+	/**
+	 * The row the live `embeddingModel` setting resolves to. Core's
+	 * registry emits this on every row; the published `SigrunHost`
+	 * contract type omits it (see the task report), so recall declares
+	 * it structurally and treats an absent field as `false`.
+	 */
+	readonly default?: boolean;
+	readonly status: "not_configured" | "degraded" | "ready";
+}
+
+/**
+ * The `host.embeddings` slice recall uses, declared structurally (the
+ * `src/host.ts` discipline the rest of this repo follows): recall never
+ * imports core's runtime, only the result type the contract itself names.
+ */
+export interface EmbeddingHost {
+	embed(
+		texts: readonly string[],
+		opts?: {
+			model?: string;
+			confidentiality?: "normal" | "local-only";
+			signal?: AbortSignal;
+			timeoutMs?: number;
+		},
+	): Promise<EmbeddingResult>;
+	list(): Promise<readonly EmbeddingModelRow[]>;
+}
 
 export interface VectorIndex {
 	upsert(itemId: number, vec: Float32Array): void;
@@ -13,6 +50,40 @@ export interface VectorIndex {
 		signal?: AbortSignal,
 	): { itemId: number; score: number }[];
 }
+
+export type EmbeddingWarning = (code: string, message: string) => void;
+
+/**
+ * A per-code warning throttle: a misconfigured provider fails every page
+ * and every query, so a per-call log would drown the operator. Each code
+ * speaks at most once a minute — long enough to stay quiet, short enough
+ * that a transient `failed` cannot go silent for the whole process.
+ *
+ * `not_local` and `no_model` are expected states (local-only material on a
+ * shared model; embeddings simply not configured) and never warn: the
+ * items remain lexical, which is the documented behaviour.
+ */
+export function createEmbeddingWarnings(
+	now: () => number = Date.now,
+	windowMs = 60_000,
+): EmbeddingWarning {
+	const last = new Map<string, number>();
+	return (code, message) => {
+		if (code === "not_local" || code === "no_model") return;
+		const at = now();
+		const previous = last.get(code);
+		if (previous !== undefined && at - previous < windowMs) return;
+		last.set(code, at);
+		console.warn(`recall: embeddings ${code}; ${message}`);
+	};
+}
+
+/**
+ * The process-wide throttle a caller gets when it does not inject one, so
+ * library users and the capture page share ONE budget per code instead of
+ * starting a fresh one per call.
+ */
+export const DEFAULT_EMBEDDING_WARNINGS: EmbeddingWarning = createEmbeddingWarnings();
 
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
 export function createSqliteVectorIndex(
@@ -62,21 +133,66 @@ function cosine(left: Float32Array, right: Buffer): number {
 	return dot / Math.sqrt(leftNorm * rightNorm);
 }
 
-/** Embed up to `limit` unembedded conversation passages from their source entries. */
+/**
+ * One embedding call for one confidentiality class. `host.embeddings.embed`
+ * never throws and splits above the provider's batch size itself, so a page
+ * needs exactly one call per class, not a recall-side chunker.
+ *
+ * `confidentiality: "local-only"` with a model core does not trust for local
+ * material comes back `not_local`; the whole batch then stays lexical rather
+ * than leaking, which is the documented outcome. Vectors are stored under the
+ * model the provider RETURNED, never a recall-side guess.
+ */
+export async function embedClass(
+	embeddings: EmbeddingHost,
+	upsert: (itemId: number, model: string, vec: Float32Array) => void,
+	batch: readonly { id: number; text: string }[],
+	confidentiality: "normal" | "local-only",
+	model: string | undefined,
+	warn: EmbeddingWarning,
+): Promise<void> {
+	if (batch.length === 0) return;
+	const opts: { confidentiality: "normal" | "local-only"; model?: string } = {
+		confidentiality,
+	};
+	if (model !== undefined) opts.model = model;
+	const result = await embeddings.embed(
+		batch.map(({ text }) => text),
+		opts,
+	);
+	if (!result.ok) {
+		warn(result.code, result.message);
+		return;
+	}
+	for (const [position, vector] of result.vectors.entries()) {
+		const candidate = batch[position];
+		if (candidate !== undefined) upsert(candidate.id, result.model, vector);
+	}
+}
+
+/**
+ * Embed up to `limit` unembedded conversation passages from their source
+ * entries. Local-only items ride `includeLocalOnly` (a model core trusts
+ * for local material) and are submitted with `confidentiality:
+ * "local-only"`; the rest go as `normal`.
+ */
 export async function embedPending(
 	db: RecallDb,
-	embedder: Embedder,
-	index: VectorIndex,
+	embeddings: EmbeddingHost,
 	model: string,
+	modelIsLocal: boolean,
 	entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>,
 	limit = 500,
+	warn: EmbeddingWarning = DEFAULT_EMBEDDING_WARNINGS,
 ): Promise<void> {
-	const candidates = [];
-	for (const item of db.listUnembeddedItems(model, limit, embedder.local)) {
+	const normal: { id: number; text: string }[] = [];
+	const local: { id: number; text: string }[] = [];
+	for (const item of db.listUnembeddedItems(model, limit, modelIsLocal)) {
+		const target = item.cls === "local-only" ? local : normal;
 		if (item.kind === "doc") {
 			if (item.doc === null) continue;
 			const text = db.docText(item.doc, item.offset, item.length);
-			if (text !== undefined) candidates.push({ id: item.id, text });
+			if (text !== undefined) target.push({ id: item.id, text });
 			continue;
 		}
 		if (
@@ -94,46 +210,51 @@ export async function embedPending(
 				candidate.blockIndex === item.blockIndex &&
 				candidate.offset === item.offset,
 		);
-		if (passage !== undefined) candidates.push({ id: item.id, text: redact(passage.text) });
+		if (passage !== undefined) target.push({ id: item.id, text: redact(passage.text) });
 	}
-	for (let offset = 0; offset < candidates.length; offset += 64) {
-		const batch = candidates.slice(offset, offset + 64);
-		try {
-			const vectors = await embedder.embed(batch.map(({ text }) => text));
-			for (const [position, vector] of vectors.entries()) {
-				const candidate = batch[position];
-				if (candidate !== undefined) index.upsert(candidate.id, vector);
-			}
-		} catch (error) {
-			console.error("recall: pending passage embedding failed", error);
-		}
-	}
+	const upsert = (itemId: number, storedModel: string, vec: Float32Array) =>
+		db.upsertVector(itemId, storedModel, vec);
+	await embedClass(embeddings, upsert, normal, "normal", model, warn);
+	await embedClass(embeddings, upsert, local, "local-only", model, warn);
 }
 
-/** Add a semantic arm that degrades to lexical search on embedding failure. */
+/**
+ * Add a semantic arm over `model`'s index. The QUERY is embedded with
+ * that same model — the index is model-scoped, so a query embedded by a
+ * different model would compare vectors from two spaces. Failures
+ * degrade to lexical search (the vector arm simply contributes nothing).
+ */
 export function createVectorArm(
-	embedder: Embedder,
+	embeddings: EmbeddingHost,
 	index: VectorIndex,
+	model: string,
 	timeoutMs: number,
+	warn: EmbeddingWarning = DEFAULT_EMBEDDING_WARNINGS,
 ): VectorArm {
-	let lastWarning = -Infinity;
 	return {
 		async query(text, candidateLimit) {
 			const signal = AbortSignal.timeout(timeoutMs);
 			try {
-				const vectors = await embedder.embed([text], signal);
-				const vector = vectors[0];
+				const result = await embeddings.embed([text], {
+					model,
+					timeoutMs,
+					signal,
+				});
+				if (!result.ok) {
+					warn(result.code, result.message);
+					return [];
+				}
+				const vector = result.vectors[0];
 				if (vector === undefined) return [];
 				return index.query(vector, candidateLimit, signal).map(({ itemId, score }) => ({
 					itemId,
 					rank: score,
 				}));
 			} catch (error) {
-				const now = Date.now();
-				if (now - lastWarning >= 60_000) {
-					console.warn("recall: semantic search unavailable; using lexical results", error);
-					lastWarning = now;
-				}
+				warn(
+					"failed",
+					error instanceof Error ? error.message : "semantic search unavailable",
+				);
 				return [];
 			}
 		},
