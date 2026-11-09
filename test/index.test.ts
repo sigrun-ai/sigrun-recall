@@ -16,7 +16,7 @@ describe("createRecall", () => {
   it("defers the database until use and closes it at harness shutdown", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-lifecycle-"));
 		let opened = 0;
-		const result = createRecall(
+		const result = await createRecall(
 			{ stores: { paths: { data: root }, settings: { get: async () => ({}) } } } as never,
 			{
 				openDb: (path) => {
@@ -38,7 +38,7 @@ describe("createRecall", () => {
 
   it("factory result declares the backfill job, both tools, both hooks and both routes", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-index-"));
-    const result = createRecall({
+    const result = await createRecall({
       stores: {
         paths: { data: root },
         settings: { get: async () => ({}) },
@@ -72,18 +72,11 @@ describe("createRecall", () => {
       try {
         const root = await mkdtemp(join(tmpdir(), "recall-drain-"));
         let closeCount = 0;
-        const result = createRecall(
+        const result = await createRecall(
           {
             stores: {
               paths: { data: root },
-              settings: {
-                get: async () => ({
-                  embedding: {
-                    url: "https://embeddings.example.invalid",
-                    model: "acme-embed-1",
-                  },
-                }),
-              },
+              settings: { get: async () => ({}) },
               secrets: { get: async () => undefined },
             },
             conversations: {
@@ -94,6 +87,11 @@ describe("createRecall", () => {
                 draft: { text: "", attachments: [] },
                 source: "test",
               }),
+            },
+            embeddings: {
+              list: async () => [{ model: "acme-embed/embed-1", provider: "acme-embed", dimensions: 2, local: false, default: true, status: "ready" }],
+              // Never settles: one capture stays pending forever.
+              embed: () => new Promise<never>(() => {}),
             },
           } as never,
           {
@@ -106,8 +104,6 @@ describe("createRecall", () => {
               };
               return db;
             },
-            // Never settles: one capture stays pending forever.
-            fetchImpl: () => new Promise<Response>(() => {}),
           },
         );
         const entry = {
@@ -146,11 +142,14 @@ describe("createRecall", () => {
     },
   );
 
-  it("a transient settings failure degrades search to lexical and a later call retries", async () => {
+  it("a transient model-list failure degrades search to lexical and a later call retries", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
-    let failures = 1;
-    const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
-    const result = createRecall(
+    // TWO failures: the factory reads settings once for the v4 migration
+    // label (best effort, silent), then the first search call's model list
+    // degrades and the second succeeds — one logged degradation.
+    let failures = 2;
+    let listFailures = 1;
+    const result = await createRecall(
       {
         stores: {
           paths: { data: root },
@@ -160,9 +159,7 @@ describe("createRecall", () => {
                 failures -= 1;
                 throw new Error("store temporarily unavailable");
               }
-              return {
-                embedding: { url: "https://embeddings.example.invalid", model: "acme-embed-1" },
-              };
+              return {};
             },
           },
           secrets: { get: async () => undefined },
@@ -179,13 +176,25 @@ describe("createRecall", () => {
           }),
           entry: async () => undefined,
         },
+        embeddings: {
+          list: async () => {
+            if (listFailures > 0) {
+              listFailures -= 1;
+              throw new Error("the registry is still booting");
+            }
+            return [
+              { model: "acme-embed/embed-1", provider: "acme-embed", dimensions: 2, local: false, default: true, status: "ready" },
+            ];
+          },
+          embed: async (texts: readonly string[]) => ({
+            ok: true,
+            model: "acme-embed/embed-1",
+            dimensions: 2,
+            vectors: texts.map(() => new Float32Array([1])),
+          }),
+        },
       } as never,
-      {
-        fetchImpl: (async () =>
-          Response.json({ data: [{ embedding: [1] }] })) as never,
-      },
     );
-    void embed;
     const errors: unknown[] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => errors.push(args);
@@ -207,5 +216,84 @@ describe("createRecall", () => {
     expect(errors).toHaveLength(1);
     await result.harnessShutdown?.({} as never, {} as never);
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("the v4 migration label comes from the factory's settings read", () => {
+  it("the factory hands the migration the label the old settings imply", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-label-"));
+    const labels: (string | undefined)[] = [];
+    try {
+      const result = await createRecall(
+        {
+          stores: {
+            paths: { data: root },
+            settings: {
+              get: async () => ({
+                embedding: {
+                  url: "https://api.openai.com/v1",
+                  model: "text-embedding-3-small",
+                },
+              }),
+            },
+            secrets: { get: async () => undefined },
+          },
+          conversations: {
+            meta: async () => ({ owner: "alice" }),
+          },
+        } as never,
+        {
+          openDb: (path, labelModel) => {
+            labels.push(labelModel);
+            return RecallDb.open(path, labelModel);
+          },
+        },
+      );
+      // The database opens lazily, so drive one route to force it open.
+      await result.routes![0]!.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(labels).toEqual(["openai/text-embedding-3-small"]);
+      await result.harnessShutdown?.({} as never, {} as never);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an unreadable settings store costs only the label, never the extension", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-label-fail-"));
+    const labels: (string | undefined)[] = [];
+    try {
+      const result = await createRecall(
+        {
+          stores: {
+            paths: { data: root },
+            settings: {
+              get: async () => {
+                throw new Error("settings unreadable");
+              },
+            },
+            secrets: { get: async () => undefined },
+          },
+          conversations: { meta: async () => ({ owner: "alice" }) },
+        } as never,
+        {
+          openDb: (path, labelModel) => {
+            labels.push(labelModel);
+            return RecallDb.open(path, labelModel);
+          },
+        },
+      );
+      const response = await result.routes![0]!.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(response.status).toBe(200);
+      expect(labels).toEqual([undefined]);
+      await result.harnessShutdown?.({} as never, {} as never);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

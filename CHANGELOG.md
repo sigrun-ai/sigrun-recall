@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Recall embeds through sigrun's core embedding registry instead of its own
+  `embedding` settings block: `host.embeddings.embed` with the live
+  `embeddingModel` default, the query path's 800 ms budget, and core's
+  local-only gate. `src/embed.ts`, the `embedding-api-key` secret and the
+  `embedding` settings block are gone (requires sigrun 0.12.0, the release
+  carrying `host.embeddings`; the `@sigrun/shared` peer floor rises to
+  `0.12.0`).
+- Vectors are keyed by model, so a model switch never loses the old index:
+  the sweep re-embeds into the new model in the background while queries keep
+  using the previous model's vectors, and the old rows are dropped only once
+  the new model covers every item. Queries use the newest model whose coverage
+  is complete, falling back to the current default.
+- Local-only items are submitted with `confidentiality: "local-only"`; a model
+  core does not trust for local material leaves them lexical instead of
+  embedding them. Capture-time embedding sends two calls per page, one per
+  confidentiality class, and stores each vector under the model the provider
+  returned.
+
+### Added
+
+- One notice per boot for the primary admin when recall's settings still carry
+  the dead `embedding` block: which model the block named, whether the existing
+  vectors were kept (labelled `openai/<model>`) or are re-embedded, and that
+  `embeddingModel` plus an OpenAI credential must be set.
+
 ## [0.2.1] - 2026-11-08
 
 - CI: test against the latest released core (core-ref: release). No code change.
@@ -28,9 +57,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 
 <!-- Pin note: the published-hooks seam requires core ≥ 0.9.0 (the
-     release carrying `host.publishedHooks`). This repo's dev link tracks
-     core's main directly; a published install needs core 0.9.0+ for the
-     hooks to fire (absent core degrades to no mirroring, not errors). -->
+     release carrying `host.publishedHooks`) and the embeddings swap
+     requires core ≥ 0.12.0 (the release carrying `host.embeddings`; this
+     line's `@sigrun/shared` peer floor). This repo's dev link tracks
+     core's main directly; an older core leaves recall lexical-only
+     rather than erroring. -->
 
 ### Added
 

@@ -4,11 +4,12 @@ import { join } from "node:path";
 
 import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi, ToolExecutionResult, ToolHookCall } from "@earendil-works/pi-durable";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import createRecall from "../src/index.js";
 
 const NOW = 1_700_000_000_000;
+const MODEL = "acme-local/embed-1";
 
 async function host(root: string, embedding = false) {
 	const entries = [
@@ -22,11 +23,7 @@ async function host(root: string, embedding = false) {
 	return {
 		stores: {
 			paths: { data: root },
-			settings: {
-				get: async () => embedding
-					? { embedding: { url: "https://example.invalid/embed", model: "embed", local: false, timeoutMs: 800 } }
-					: {},
-			},
+			settings: { get: async () => ({}) },
 			secrets: { get: async () => undefined },
 		},
 		conversations: {
@@ -35,13 +32,34 @@ async function host(root: string, embedding = false) {
 			entries: async () => ({ items: entries }),
 			list: async () => [{ id: 1 }],
 		},
+		embeddings: embedding
+			? {
+					// One configured default model, synthetic vectors: no endpoint.
+					list: async () => [
+						{
+							model: MODEL,
+							provider: "acme-local",
+							dimensions: 2,
+							local: false,
+							default: true,
+							status: "ready",
+						},
+					],
+					embed: async (texts: readonly string[]) => ({
+						ok: true,
+						model: MODEL,
+						dimensions: 2,
+						vectors: texts.map(() => new Float32Array([1, 0])),
+					}),
+				}
+			: undefined,
 	} as never;
 }
 
 describe("factory integrations", () => {
 	it("an artifact written by afterTool opens through the separately constructed tool store", async () => {
 		const root = await mkdtemp(join(tmpdir(), "recall-integration-artifact-"));
-		const result = createRecall(await host(root));
+		const result = await createRecall(await host(root));
 		const hook = (result.extension!.hooks![0]!.handlers as {
 			afterTool(call: ToolHookCall, result: ToolExecutionResult, api: never, context: Context): Promise<ToolExecutionResult | undefined>;
 		}).afterTool;
@@ -68,10 +86,7 @@ describe("factory integrations", () => {
 
 	it("configured embeddings reach the production search route for a lexical-disjoint hit", async () => {
 		const root = await mkdtemp(join(tmpdir(), "recall-integration-vector-"));
-		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-			new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), { status: 200 }),
-		);
-		const result = createRecall(await host(root, true));
+		const result = await createRecall(await host(root, true));
 		const route = result.routes!.find((candidate) => candidate.path === "search")!;
 		// Seed the real vector index through the same configured service used by capture.
 		const backfill = result.routes!.find((candidate) => candidate.path === "backfill")!;
@@ -84,7 +99,6 @@ describe("factory integrations", () => {
 		const body = await response.json();
 		expect(body.hits).toHaveLength(1);
 		expect(body.hits[0].conversationId).toBe(1);
-		fetchMock.mockRestore();
 		await result.harnessShutdown?.({} as never, {} as never);
 		await rm(root, { recursive: true, force: true });
 	});

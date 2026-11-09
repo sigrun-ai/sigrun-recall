@@ -3,72 +3,207 @@ import { AgentDoc, defineExtension, GenerationTask, hook, ToolTask, } from "@ear
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
-import { resolveSettings, resolveUserSettings } from "./config.js";
+import { migrationLabel, resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
+import { embeddingsMovedNotice, primaryAdmin } from "./notice.js";
 import { createSearcher } from "./search.js";
 import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
 import { createTools } from "./tools.js";
-import { createEmbedder } from "./embed.js";
 import { applyRecall } from "./inject.js";
-import { createSqliteVectorIndex, createVectorArm, embedPending } from "./vectors.js";
+import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOutput, RecallSearchInput, RecallSearchOutput, } from "./hooks.js";
+/** The query path's own budget: one short call, or the lexical results. */
+const QUERY_TIMEOUT_MS = 800;
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
+ *
+ * Async for ONE reason: the v4 vectors migration stamps the vectors it
+ * inherits from the pre-model schema with the model the OLD settings named,
+ * and that label must be known before the database is first opened (which
+ * happens lazily, from synchronous call sites).
  */
-export default function createRecall(host, deps = {}) {
+export default async function createRecall(host, deps = {}) {
+    // Best effort: an unreadable settings file only costs the label, so the
+    // inherited rows are re-embedded instead of being trusted.
+    let rawSettings;
+    try {
+        rawSettings = await host.stores.settings.get();
+    }
+    catch {
+        rawSettings = undefined;
+    }
+    const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
     let database;
-    let embedder;
-    let embedderError;
-    let embeddingKey;
     let services;
     const pending = new Set();
+    /**
+     * Bumped whenever the SWEEP has changed what coverage looks like. The
+     * search-model decision derives from a bounded `modelCoverage` scan, so
+     * it is cached against this counter rather than re-scanned per query.
+     * Capture-time embedding does not bump it: capturing into the current
+     * model cannot make an INCOMPLETE model complete (it only adds items),
+     * and the sweep is what finishes a switch anyway.
+     */
+    let vectorGeneration = 0;
+    let searchModelCache;
+    let noticeRaised = false;
+    let noticeAttempting = false;
+    const warnEmbedding = createEmbeddingWarnings();
+    const embeddings = host.embeddings;
     const trackEmbedding = (work) => {
-        pending.add(work);
-        void work.finally(() => pending.delete(work));
+        // OBSERVE the rejection at creation: a capture page that rejects (a
+        // throwing host, a closed database during shutdown) must never sit in
+        // `pending` as an unhandled rejection — Node would end the process.
+        const tracked = work
+            .catch((error) => {
+            warnEmbedding("failed", error instanceof Error ? error.message : "passage embedding failed");
+        })
+            .finally(() => pending.delete(tracked));
+        pending.add(tracked);
     };
-    // Capture/search surfaces added by later tasks share this one lazy handle.
     // Core does not create paths.data; RecallDb.open creates its parent.
     function db() {
-        database ??= (deps.openDb ?? RecallDb.open)(join(host.stores.paths.data, "recall.db"));
+        database ??= (deps.openDb ?? RecallDb.open)(join(host.stores.paths.data, "recall.db"), labelModel);
         return database;
     }
-    async function semantic() {
-        const settings = await resolveSettings(host.stores.settings);
-        if (settings.embedding === undefined)
-            return {};
-        const key = JSON.stringify(settings.embedding);
-        if (embedder === undefined || embeddingKey !== key || embedderError !== undefined) {
-            embedderError = undefined;
-            embedder = createEmbedder(settings.embedding, () => host.stores.secrets.get("embedding-api-key"), deps.fetchImpl);
-            embeddingKey = key;
-        }
-        return {
-            embedder,
-            index: createSqliteVectorIndex(db()),
-            timeoutMs: settings.embedding.timeoutMs,
-        };
+    /**
+     * One per boot, best effort: the OLD `embedding` block is dead
+     * configuration from here on, and the operator has to move the model
+     * into `embeddingModel` and the credential into auth.json themselves.
+     *
+     * The factory body cannot AWAIT it: `host.users`/`host.notify` are
+     * bridged members and boot binds the bridge only after
+     * `loadExtensions` returns, so a factory-body await would deadlock on a
+     * bridge that cannot bind until the factory returns. It is fired from
+     * the factory (void) and again on every semantic touch; the
+     * `noticeRaised` flag is only set once a RECIPIENT (or the empty
+     * directory) was resolved, so a pre-bind attempt that cannot reach the
+     * directory leaves the door open for the first post-bind touch (the
+     * first capture or the ten-minute sweep, whichever comes first).
+     *
+     * Recipients, exactly as core's contract defines them: an EMPTY
+     * directory (single-operator mode) is userless and receives the notice
+     * with `user: undefined` — `notifyExtension` only demands a user when
+     * `users.isClaimed()`, i.e. when the directory is non-empty. A
+     * non-empty directory with nobody carrying the admin flag is the ONE
+     * case recall drops: `undefined` would be rejected there, and there is
+     * no admin the notice is for.
+     */
+    function maybeNoteEmbeddingsMoved() {
+        if (noticeRaised || noticeAttempting || rawSettings === undefined)
+            return;
+        const notice = embeddingsMovedNotice(rawSettings);
+        if (notice === undefined)
+            return;
+        noticeAttempting = true;
+        void (async () => {
+            let users;
+            try {
+                users = await host.users.list();
+            }
+            catch {
+                // No bridge yet, or the directory is unavailable: try again on
+                // the next semantic touch.
+                noticeAttempting = false;
+                return;
+            }
+            // Resolved: stop trying whatever the outcome.
+            noticeRaised = true;
+            noticeAttempting = false;
+            const user = primaryAdmin(users);
+            if (user === undefined && users.length > 0) {
+                // Users exist but none is an admin: there is nobody this notice
+                // is FOR, and core would reject a userless notice here.
+                return;
+            }
+            try {
+                await host.notify({ user, ...notice });
+            }
+            catch (error) {
+                console.warn("recall: the embeddings-moved notice was not delivered", error);
+            }
+        })();
     }
-    async function vectors() {
-        let semanticDeps;
+    maybeNoteEmbeddingsMoved();
+    /**
+     * The two models recall distinguishes:
+     *
+     * - **current** — the row core's `embeddingModel` resolves to (`default:
+     *   true`). The sweep re-embeds into it while older rows stay put.
+     * - **search** — the newest model whose coverage is complete, else the
+     *   current one (the Global Constraints' search-model rule). "Newest" is
+     *   `list()` order: core's registry enumerates providers in load order
+     *   and each provider's models in declaration order, so the highest
+     *   index is the most recently registered model.
+     *
+     * The scan walks the whole list backwards and takes the first COMPLETE
+     * row, with no shortcut past the current row: during a switch the
+     * current model's index is still empty while an older, complete one
+     * answers, and that older row can sit at ANY index — including below the
+     * current one. The common switch proves it: `3-small` -> `3-large` are
+     * two models of ONE provider, declared small-then-large, so the current
+     * row (`3-large`) is listed LAST and complete-`3-small` is listed
+     * BEFORE it. A rule that stopped at the current row would hand queries
+     * an empty index for the whole re-embed.
+     *
+     * Every row is a candidate on its own coverage; the current default is
+     * only the fallback for when NO row covers everything.
+     */
+    function pickSemantic(rows) {
+        if (embeddings === undefined)
+            return undefined;
+        const current = rows.find((row) => row.default === true);
+        if (current === undefined)
+            return undefined;
+        const signature = JSON.stringify([
+            vectorGeneration,
+            rows.map((row) => [row.model, row.local, row.default === true]),
+        ]);
+        if (searchModelCache?.signature === signature) {
+            // SAFETY: the cache signature covers every row's model, locality
+            // and default flag, so a cached model is still present and still
+            // describes the same coverage question.
+            const cached = rows.find((row) => row.model === searchModelCache.model);
+            if (cached !== undefined) {
+                return { embeddings, current, search: cached };
+            }
+        }
+        // The rule, literally: the highest-index row whose coverage is
+        // complete, else the current default. Coverage is per-row and asked
+        // of EVERY row — never skipped for the current one.
+        let search = current;
+        for (let index = rows.length - 1; index >= 0; index -= 1) {
+            const row = rows[index];
+            if (db().modelCoverage(row.model, row.local).complete) {
+                search = row;
+                break;
+            }
+        }
+        searchModelCache = { signature, model: search.model };
+        return { embeddings, current, search };
+    }
+    async function semantic() {
+        if (embeddings === undefined)
+            return undefined;
+        maybeNoteEmbeddingsMoved();
         try {
-            semanticDeps = await semantic();
+            return pickSemantic(await embeddings.list());
         }
         catch (error) {
-            // Settings can transiently fail to read; degrade to lexical and let
-            // the next call retry instead of permanently caching the failure.
-            embedderError = error;
-            console.error("recall: semantic search configuration failed", error);
+            // The registry can transiently fail to answer; degrade to lexical
+            // and let the next call retry instead of caching the failure.
+            console.error("recall: the embedding model list failed", error);
             return undefined;
         }
-        if (semanticDeps.embedder === undefined ||
-            semanticDeps.index === undefined ||
-            semanticDeps.timeoutMs === undefined) {
+    }
+    async function vectors() {
+        const semanticDeps = await semantic();
+        if (semanticDeps === undefined)
             return undefined;
-        }
-        return createVectorArm(semanticDeps.embedder, semanticDeps.index, semanticDeps.timeoutMs);
+        return createVectorArm(semanticDeps.embeddings, createSqliteVectorIndex(db(), semanticDeps.search.model), semanticDeps.search.model, QUERY_TIMEOUT_MS, warnEmbedding);
     }
     let artifacts;
     const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
@@ -84,10 +219,22 @@ export default function createRecall(host, deps = {}) {
         }
     };
     const localProviders = async (user) => (await userSettings(user)).localProviders;
+    /**
+     * The background re-embed: fill the CURRENT model's index, then drop
+     * every other model's rows once the current one covers every item it
+     * can embed. Doubled storage exists only during a switch, and the old
+     * index is never lost item by item.
+     */
     const pendingVectors = async () => {
         const semanticDeps = await semantic();
-        if (semanticDeps.embedder !== undefined && semanticDeps.index !== undefined) {
-            await embedPending(db(), semanticDeps.embedder, semanticDeps.index, entry, 500);
+        if (semanticDeps === undefined)
+            return;
+        const { embeddings: surface, current } = semanticDeps;
+        await embedPending(db(), surface, current.model, current.local, entry, 500, warnEmbedding);
+        vectorGeneration += 1;
+        if (db().modelCoverage(current.model, current.local).complete) {
+            db().deleteVectorsExcept(current.model);
+            vectorGeneration += 1;
         }
     };
     const backfillDeps = () => ({
@@ -221,7 +368,11 @@ export default function createRecall(host, deps = {}) {
                     db: db(),
                     meta: (id) => host.conversations.meta(id),
                     now: deps.now ?? Date.now,
-                    ...semanticDeps,
+                    // Named fields, not `...semanticDeps`: capture embeds
+                    // through the live default only (the search model and
+                    // the query budget are search-path concerns).
+                    embeddings: semanticDeps?.embeddings,
+                    warn: warnEmbedding,
                     trackEmbedding,
                 }, event.conversationId, (query, limit, cursor) => api.entries({ ...query, minEntryId: query.minEntryId }, limit, cursor, context));
             }
@@ -233,10 +384,10 @@ export default function createRecall(host, deps = {}) {
             const deadline = Date.now() + 30_000;
             while (pending.size > 0 && Date.now() < deadline) {
                 const remaining = deadline - Date.now();
-                // A capture promise may never settle (a hung embedding fetch); race
-                // each round against the remaining budget so the drain always
-                // returns by the deadline. The losing timer is cleared so the
-                // common fast-settle case leaves no live timer behind.
+                // A capture promise may never settle (a hung embedding call);
+                // race each round against the remaining budget so the drain
+                // always returns by the deadline. The losing timer is cleared
+                // so the common fast-settle case leaves no live timer behind.
                 let timer;
                 await Promise.race([
                     Promise.allSettled([...pending]),

@@ -34,11 +34,20 @@ export interface DocRow {
     sources: string[];
     updatedAt: number;
 }
-/** The extension's private SQLite index. Callers close it during shutdown. */
+/**
+ * The extension's private SQLite index. Callers close it during shutdown.
+ *
+ * `labelModel` is the model the v4 migration stamps on the vectors it
+ * inherits from the pre-model schema: the caller passes
+ * `openai/<old embedding model>` only when the old settings named a
+ * model AND pointed at [OI]'s own endpoint (config's `migrationLabel`).
+ * Without a label those rows land under `model = ""` — a key no real
+ * model has, so they are re-embedded and later deleted.
+ */
 export declare class RecallDb {
     private readonly db;
     private constructor();
-    static open(path: string): RecallDb;
+    static open(path: string, labelModel?: string): RecallDb;
     private migrate;
     insertItem(row: Omit<ItemRow, "id">, text: string): number | undefined;
     /**
@@ -82,14 +91,54 @@ export declare class RecallDb {
     itemText(id: number): string | undefined;
     /** Item ids matching a trigram FTS5 expression, in match order. */
     matchTrigram(expression: string): number[];
-    upsertVector(itemId: number, vec: Float32Array): void;
-    listVectorsPage(after: number, limit: number): {
+    upsertVector(itemId: number, model: string, vec: Float32Array): void;
+    listVectorsPage(model: string, after: number, limit: number): {
         itemId: number;
         vec: Buffer;
     }[];
+    /**
+     * Drop every vector that is not the given model's — the switch's cleanup:
+     * only called once the new model covers every item, so the old index is
+     * never lost item by item.
+     */
+    deleteVectorsExcept(model: string): void;
     state(key: string): string | undefined;
     setState(key: string, value: string): void;
-    listUnembeddedItems(limit: number, includeLocalOnly: boolean): ItemRow[];
+    /**
+     * Items with no vector for `model` — the embedPending work list. Items a
+     * model may never embed (a non-local model's local-only items) are
+     * filtered out by `includeLocalOnly`, not treated as pending. `after`
+     * pages by item id for {@link modelCoverage}'s bounded scan.
+     */
+    listUnembeddedItems(model: string, limit: number, includeLocalOnly: boolean, after?: number): ItemRow[];
+    /**
+     * Whether the sweep could embed this item at all: a document item whose
+     * document still exists, or a turn/tool item whose entry is addressable.
+     * This is the structural "dangling" class {@link modelCoverage}
+     * subtracts, and the same class `embedPending` skips — so the coverage
+     * probe can never call an item covered that the sweep would refuse.
+     *
+     * Runtime skips are NOT dangling: an entry that fails to load or a
+     * passage that no longer matches stays pending, so both the sweep and
+     * the probe retry it rather than declare it done.
+     */
+    private embeddable;
+    private docExists;
+    /**
+     * Whether `model` has a vector for every item it can embed: the eligible
+     * list `listUnembeddedItems` returns, minus the items `embeddable` calls
+     * structurally dangling, is empty. Local-only items a non-local model may
+     * never embed are not counted against it (`includeLocalOnly`, exactly as
+     * for the sweep).
+     *
+     * The caller deletes the previous model's rows once this says complete,
+     * which is irreversible — so the probe returns `complete: false` the
+     * moment ONE embeddable item lacks a vector, and gives up (also `false`)
+     * rather than guess when the dangling backlog exceeds its bounded scan.
+     */
+    modelCoverage(model: string, includeLocalOnly: boolean): {
+        complete: boolean;
+    };
     cursor(conversationId: number): number | undefined;
     setCursor(conversationId: number, entryId: number): void;
     taintFrom(conversationId: number): number | undefined;

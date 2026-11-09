@@ -2,10 +2,10 @@ import type { Cursor, EntryRecord, Page } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 
 import type { RecallDb } from "./db.js";
-import type { Embedder } from "./embed.js";
-import type { VectorIndex } from "./vectors.js";
 import { passagesOf } from "./passages.js";
 import { redact } from "./redact.js";
+import type { EmbeddingHost, EmbeddingWarning } from "./vectors.js";
+import { DEFAULT_EMBEDDING_WARNINGS, embedClass } from "./vectors.js";
 
 const PAGE_SIZE = 200;
 
@@ -13,10 +13,16 @@ export interface CaptureDeps {
 	db: RecallDb;
 	meta(id: number): Promise<SessionMeta>;
 	now(): number;
-	/** Optional best-effort semantic indexing; capture never awaits embedding. */
-	embedder?: Embedder;
-	index?: VectorIndex;
+	/**
+	 * Optional best-effort semantic indexing; capture never awaits
+	 * embedding. No `model` is requested (the live `embeddingModel`
+	 * default decides) and vectors are stored under the model the
+	 * provider RETURNED, so a provider that resolves a different model
+	 * still lands its vectors in the right space.
+	 */
+	embeddings?: EmbeddingHost;
 	trackEmbedding?: (work: Promise<void>) => void;
+	warn?: EmbeddingWarning;
 }
 
 export type EntryReader = (
@@ -43,10 +49,12 @@ export async function captureConversation(
 
 	do {
 		const page = await read(query, PAGE_SIZE, cursor);
-		const insertedForEmbedding: { id: number; text: string; localOnly: boolean }[] = [];
+		const normal: { id: number; text: string }[] = [];
+		const local: { id: number; text: string }[] = [];
 		for (const entry of page.items) {
 			if (entry.conversationId !== conversationId) continue;
 			for (const passage of passagesOf(entry)) {
+				const localOnly = taintFrom !== undefined && passage.entryId >= taintFrom;
 				const inserted = deps.db.insertItem(
 					{
 						conversationId,
@@ -60,10 +68,7 @@ export async function captureConversation(
 						artifact: null,
 						doc: null,
 						job: meta.jobId !== undefined,
-						cls:
-							taintFrom !== undefined && passage.entryId >= taintFrom
-								? "local-only"
-								: "normal",
+						cls: localOnly ? "local-only" : "normal",
 						at: passage.at,
 						title: meta.name ?? meta.autoName ?? null,
 					},
@@ -71,17 +76,16 @@ export async function captureConversation(
 				);
 				if (inserted !== undefined) {
 					indexed += 1;
-					insertedForEmbedding.push({
+					(localOnly ? local : normal).push({
 						id: inserted,
 						text: redact(passage.text),
-						localOnly: taintFrom !== undefined && passage.entryId >= taintFrom,
 					});
 				}
 			}
 		}
 
-		if (deps.embedder !== undefined && deps.index !== undefined) {
-			const work = embedPage(deps.embedder, deps.index, insertedForEmbedding);
+		if (deps.embeddings !== undefined) {
+			const work = embedPage(deps, normal, local);
 			if (deps.trackEmbedding === undefined) void work;
 			else deps.trackEmbedding(work);
 		}
@@ -94,22 +98,38 @@ export async function captureConversation(
 	return { indexed };
 }
 
+/**
+ * TWO calls per page, one per confidentiality class — never mixed, so a
+ * provider that refuses `local-only` cannot take the normal batch down with
+ * it (and the normal batch is never labelled more strictly than it needs to
+ * be). No `model` is requested: the live `embeddingModel` default decides.
+ */
 async function embedPage(
-	embedder: Embedder,
-	index: VectorIndex,
-	inserted: readonly { id: number; text: string; localOnly: boolean }[],
+	deps: CaptureDeps,
+	normal: readonly { id: number; text: string }[],
+	local: readonly { id: number; text: string }[],
 ): Promise<void> {
-	const candidates = inserted.filter(({ localOnly }) => !localOnly || embedder.local);
-	for (let offset = 0; offset < candidates.length; offset += 64) {
-		const batch = candidates.slice(offset, offset + 64);
+	const embeddings = deps.embeddings;
+	if (embeddings === undefined) return;
+	const warn = deps.warn ?? DEFAULT_EMBEDDING_WARNINGS;
+	const upsert = (itemId: number, model: string, vec: Float32Array) =>
+		deps.db.upsertVector(itemId, model, vec);
+	// Containment: `embed` is contracted never to throw, but this promise is
+	// fire-and-forget (nobody awaits a capture's embedding), so a throw from
+	// a host that breaks the contract — a bridge that never bound, a closed
+	// database after shutdown — must be logged here, NOT left to become an
+	// unhandled rejection. The items stay lexical-only either way.
+	for (const [batch, confidentiality] of [
+		[normal, "normal"],
+		[local, "local-only"],
+	] as const) {
 		try {
-			const vectors = await embedder.embed(batch.map(({ text }) => text));
-			for (const [indexInBatch, vector] of vectors.entries()) {
-				const candidate = batch[indexInBatch];
-				if (candidate !== undefined) index.upsert(candidate.id, vector);
-			}
+			await embedClass(embeddings, upsert, batch, confidentiality, undefined, warn);
 		} catch (error) {
-			console.error("recall: passage embedding failed; item remains lexical-only", error);
+			warn(
+				"failed",
+				`passage embedding failed: ${error instanceof Error ? error.message : "unknown error"}`,
+			);
 		}
 	}
 }

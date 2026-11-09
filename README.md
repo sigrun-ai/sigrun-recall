@@ -6,21 +6,25 @@ Recall indexes conversation turns, tool calls/results, and complete large tool r
 
 ## Settings and secrets
 
-Extension settings support `externalizeBytes` (default `24576`) and an optional `embedding` object:
+Extension settings support `externalizeBytes` (default `24576`). Per-user settings support `autoRecall` (default `true`) and `localProviders` (default `[]`).
 
 ```json
-{
-  "externalizeBytes": 24576,
-  "embedding": {
-    "url": "https://example.invalid/embed",
-    "model": "embed-model",
-    "local": false,
-    "timeoutMs": 800
-  }
-}
+{ "externalizeBytes": 24576 }
 ```
 
-The optional `embedding-api-key` secret authorizes the `[OI]`-compatible embeddings endpoint. Embeddings are sent in batches and only when configured; failures leave lexical search available. Per-user settings support `autoRecall` (default `true`) and `localProviders` (default `[]`).
+## Embeddings
+
+Recall embeds through sigrun's core embedding registry (`host.embeddings`), so models, credentials and the local-only gate are configured in one place for the whole server instead of per extension.
+
+- **Which model.** The `embeddingModel` core setting (`provider/model`) names the default. There is no silent default: with none set, recall searches lexically only. A model in `embeddings.localModels` (and one its provider does not veto) may also receive `local-only` text.
+- **Credential.** The default OpenAI model (`openai/text-embedding-3-small`) needs the `openai` credential in `auth.json`, or `OPENAI_API_KEY` in the sigrun environment/page.
+- **Switching models.** Vectors are keyed by model, so a switch never loses the old index: the sweep re-embeds into the new model in the background while queries keep using the previous model's vectors, and the old rows are dropped only once the new model covers every item. Queries use the newest model whose coverage is complete, falling back to the current default.
+- **Local-only items** are submitted with `confidentiality: "local-only"`; a model core does not trust for local material leaves them lexical (no vector, still text-searchable).
+- **Failures** never break search: a missing model, an unconfigured credential or a timeout degrades that call to lexical results. The query path budgets 800 ms per call.
+
+### Migrating from recall's own `embedding` block
+
+Recall used to embed through its own `embedding` settings block and `embedding-api-key` secret. Both are gone; the block no longer does anything, and recall raises one notice per boot telling the primary admin what happened. If the old block named `api.openai.com` and a model, existing vectors were kept and labelled `openai/<model>` — setting `embeddingModel` to that model reuses them. Any other endpoint could have served a different model under that name, so those vectors are re-embedded under the new model.
 
 ## Access and confidentiality
 

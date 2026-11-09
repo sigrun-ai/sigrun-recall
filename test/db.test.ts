@@ -244,7 +244,7 @@ describe("user-owned documents", () => {
     expect(db.insertItem(item({ entryId: 11 }), "plumber")).toBe(2);
   });
 
-  it("a fresh database opens at v3 with the docs table", () => {
+  it("a fresh database opens with the docs table", () => {
     const db = openMemory();
 
     expect(db.doc(1)).toBeUndefined();
@@ -324,7 +324,7 @@ describe("user-owned documents", () => {
     const db = openMemory();
     const result = db.upsertDoc(doc(), NOW);
     const itemId = db.searchPorter("riverside", 10)[0]!.id;
-    db.upsertVector(itemId, new Float32Array([1, 0]));
+    db.upsertVector(itemId, "acme-local/embed-1", new Float32Array([1, 0]));
 
     expect(db.removeDoc("acme-local", "alice", "k1")).toBe(true);
 
@@ -332,7 +332,7 @@ describe("user-owned documents", () => {
     expect(db.item(itemId)).toBeUndefined();
     expect(db.searchPorter("riverside", 10)).toEqual([]);
     expect(db.matchTrigram('"ver"')).toEqual([]);
-    expect(db.listVectorsPage(0, 10)).toEqual([]);
+    expect(db.listVectorsPage("acme-local/embed-1", 0, 10)).toEqual([]);
     expect(db.removeDoc("acme-local", "alice", "k1")).toBe(false);
   });
 
@@ -353,5 +353,147 @@ describe("user-owned documents", () => {
       owner: "bob",
       text: "bob keeps his ledger",
     });
+  });
+});
+
+describe("model-scoped vectors", () => {
+  const OLD_MODEL = "openai/text-embedding-3-small";
+  const NEW_MODEL = "acme-local/embed-2";
+
+  function floats(buffer: Buffer): number[] {
+    return [...new Float32Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))];
+  }
+
+  /** Rewrite a fresh database's vectors table into the v3 shape: one row per item, no model. */
+  function toV3(path: string, vectors: { itemId: number; vec: Float32Array }[]): void {
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec("DROP TABLE vectors");
+      raw.exec(`
+        CREATE TABLE vectors (
+          itemId INTEGER PRIMARY KEY,
+          dim INTEGER NOT NULL,
+          vec BLOB NOT NULL
+        );
+      `);
+      for (const { itemId, vec } of vectors) {
+        raw
+          .prepare("INSERT INTO vectors (itemId, dim, vec) VALUES (?, ?, ?)")
+          .run(itemId, vec.length, Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
+      }
+      raw.exec("UPDATE schema_version SET version = 3");
+    } finally {
+      raw.close();
+    }
+  }
+
+  /** A v3 database with two items and one vector each, ready for the v4 migration. */
+  async function seededV3(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "recall-v4-"));
+    temporaryDirectories.push(root);
+    const path = join(root, "recall.db");
+    const seed = RecallDb.open(path);
+    seed.insertItem(item(), "electrician");
+    seed.insertItem(item({ entryId: 11 }), "plumber");
+    seed.close();
+    toV3(path, [
+      { itemId: 1, vec: new Float32Array([1, 0]) },
+      { itemId: 2, vec: new Float32Array([0, 1]) },
+    ]);
+    return path;
+  }
+
+  it("v3 → v4 keeps every vector", async () => {
+    const path = await seededV3();
+
+    const db = RecallDb.open(path, OLD_MODEL);
+    openDatabases.push(db);
+
+    const page = db.listVectorsPage(OLD_MODEL, 0, 10);
+    expect(page.map((row) => row.itemId)).toEqual([1, 2]);
+    expect(floats(page[0]!.vec)).toEqual([1, 0]);
+    expect(floats(page[1]!.vec)).toEqual([0, 1]);
+    // The rebuilt table is keyed by model, not by item alone.
+    expect(db.listVectorsPage("", 0, 10)).toEqual([]);
+    expect(db.item(1)).toEqual({ id: 1, ...item() });
+  });
+
+  it("openai rows are labelled, others are not", async () => {
+    const labelledPath = await seededV3();
+    const labelled = RecallDb.open(labelledPath, OLD_MODEL);
+    openDatabases.push(labelled);
+    expect(labelled.listVectorsPage(OLD_MODEL, 0, 10)).toHaveLength(2);
+
+    const unlabelledPath = await seededV3();
+    const unlabelled = RecallDb.open(unlabelledPath);
+    openDatabases.push(unlabelled);
+    // No label: the rows sit under the never-matching model "" and are re-embedded.
+    expect(unlabelled.listVectorsPage(OLD_MODEL, 0, 10)).toEqual([]);
+    expect(unlabelled.listVectorsPage("", 0, 10)).toHaveLength(2);
+  });
+
+  it("unembedded means lacking a row for this model", () => {
+    const db = openMemory();
+    db.insertItem(item(), "electrician");
+    db.insertItem(item({ entryId: 11 }), "plumber");
+    db.upsertVector(1, OLD_MODEL, new Float32Array([1, 0]));
+
+    expect(db.listUnembeddedItems(OLD_MODEL, 10, false).map((row) => row.id)).toEqual([2]);
+    expect(db.listUnembeddedItems(NEW_MODEL, 10, false).map((row) => row.id)).toEqual([1, 2]);
+  });
+
+  it("old model rows survive until coverage, then are deleted", () => {
+    const db = openMemory();
+    db.insertItem(item(), "electrician");
+    db.upsertVector(1, OLD_MODEL, new Float32Array([1, 0]));
+
+    expect(db.modelCoverage(NEW_MODEL, false)).toEqual({ complete: false });
+    expect(db.listVectorsPage(OLD_MODEL, 0, 10)).toHaveLength(1);
+
+    db.upsertVector(1, NEW_MODEL, new Float32Array([0, 1]));
+    expect(db.modelCoverage(NEW_MODEL, false)).toEqual({ complete: true });
+
+    db.deleteVectorsExcept(NEW_MODEL);
+    expect(db.listVectorsPage(OLD_MODEL, 0, 10)).toEqual([]);
+    expect(db.listVectorsPage(NEW_MODEL, 0, 10).map((row) => row.itemId)).toEqual([1]);
+  });
+
+  it("a table-shaped database with no version row still gets the v4 vectors shape", async () => {
+    // SCHEMA's `CREATE TABLE IF NOT EXISTS` never reshapes an existing
+    // vectors table, so a database carrying tables but no version row must
+    // still be rebuilt — otherwise it keeps the pre-model shape forever.
+    const root = await mkdtemp(join(tmpdir(), "recall-v4-noversion-"));
+    temporaryDirectories.push(root);
+    const path = join(root, "recall.db");
+    const seed = RecallDb.open(path);
+    seed.insertItem(item(), "electrician");
+    seed.close();
+    toV3(path, [{ itemId: 1, vec: new Float32Array([1, 0]) }]);
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec("DELETE FROM schema_version");
+    } finally {
+      raw.close();
+    }
+
+    const db = RecallDb.open(path, OLD_MODEL);
+    openDatabases.push(db);
+
+    expect(db.listVectorsPage(OLD_MODEL, 0, 10).map((row) => row.itemId)).toEqual([1]);
+  });
+
+  it("dangling and local-only-ineligible items don't block coverage", () => {
+    const db = openMemory();
+    db.insertItem(item(), "electrician");
+    db.upsertVector(1, NEW_MODEL, new Float32Array([1, 0]));
+    // Dangling: a turn with no entry to read its text from.
+    db.insertItem(item({ entryId: null, messageIndex: 0 }), "orphan");
+    // Dangling: a doc item whose doc row is gone.
+    db.insertItem(item({ conversationId: null, kind: "doc", entryId: null, messageIndex: null, doc: null }), "orphan");
+    // Eligible for a local model only.
+    db.insertItem(item({ entryId: 11, cls: "local-only" }), "private");
+
+    expect(db.modelCoverage(NEW_MODEL, false)).toEqual({ complete: true });
+    expect(db.modelCoverage(NEW_MODEL, true)).toEqual({ complete: false });
   });
 });
