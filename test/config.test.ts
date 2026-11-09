@@ -99,6 +99,16 @@ describe("the embeddings-moved notice", () => {
 		expect(notice.body.length).toBeLessThanOrEqual(2000);
 	});
 
+	it("bounds an operator-supplied model and endpoint to the body cap", () => {
+		// `notify` rejects a body over 2000 characters, which would lose the
+		// notice for good, so the interpolated config is clamped.
+		const notice = embeddingsMovedNotice({
+			embedding: { url: "https://example.invalid/" + "u".repeat(5000), model: "m".repeat(5000) },
+		})!;
+		expect(notice.body.length).toBeLessThanOrEqual(2000);
+		expect(notice.body).toContain("embeddingModel");
+	});
+
 	it("says unlabelled vectors are re-embedded", () => {
 		const notice = embeddingsMovedNotice({
 			embedding: { url: "https://example.invalid/v1", model: "embed-model" },

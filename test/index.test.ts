@@ -148,7 +148,6 @@ describe("createRecall", () => {
     // label (best effort, silent), then the first search call's model list
     // degrades and the second succeeds — one logged degradation.
     let failures = 2;
-    const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
     let listFailures = 1;
     const result = await createRecall(
       {
@@ -196,7 +195,6 @@ describe("createRecall", () => {
         },
       } as never,
     );
-    void embed;
     const errors: unknown[] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => errors.push(args);

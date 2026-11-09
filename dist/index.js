@@ -54,7 +54,14 @@ export default async function createRecall(host, deps = {}) {
     const warnEmbedding = createEmbeddingWarnings();
     const embeddings = host.embeddings;
     const trackEmbedding = (work) => {
-        const tracked = work.finally(() => pending.delete(tracked));
+        // OBSERVE the rejection at creation: a capture page that rejects (a
+        // throwing host, a closed database during shutdown) must never sit in
+        // `pending` as an unhandled rejection — Node would end the process.
+        const tracked = work
+            .catch((error) => {
+            warnEmbedding("failed", error instanceof Error ? error.message : "passage embedding failed");
+        })
+            .finally(() => pending.delete(tracked));
         pending.add(tracked);
     };
     // Core does not create paths.data; RecallDb.open creates its parent.
@@ -72,10 +79,18 @@ export default async function createRecall(host, deps = {}) {
      * `loadExtensions` returns, so a factory-body await would deadlock on a
      * bridge that cannot bind until the factory returns. It is fired from
      * the factory (void) and again on every semantic touch; the
-     * `noticeRaised` flag is only set once a RECIPIENT was resolved, so a
-     * pre-bind attempt that cannot reach the directory leaves the door open
-     * for the first post-bind touch (the first capture or the ten-minute
-     * sweep, whichever comes first).
+     * `noticeRaised` flag is only set once a RECIPIENT (or the empty
+     * directory) was resolved, so a pre-bind attempt that cannot reach the
+     * directory leaves the door open for the first post-bind touch (the
+     * first capture or the ten-minute sweep, whichever comes first).
+     *
+     * Recipients, exactly as core's contract defines them: an EMPTY
+     * directory (single-operator mode) is userless and receives the notice
+     * with `user: undefined` — `notifyExtension` only demands a user when
+     * `users.isClaimed()`, i.e. when the directory is non-empty. A
+     * non-empty directory with nobody carrying the admin flag is the ONE
+     * case recall drops: `undefined` would be rejected there, and there is
+     * no admin the notice is for.
      */
     function maybeNoteEmbeddingsMoved() {
         if (noticeRaised || noticeAttempting || rawSettings === undefined)
@@ -85,9 +100,9 @@ export default async function createRecall(host, deps = {}) {
             return;
         noticeAttempting = true;
         void (async () => {
-            let user;
+            let users;
             try {
-                user = primaryAdmin(await host.users.list());
+                users = await host.users.list();
             }
             catch {
                 // No bridge yet, or the directory is unavailable: try again on
@@ -95,12 +110,15 @@ export default async function createRecall(host, deps = {}) {
                 noticeAttempting = false;
                 return;
             }
-            // Resolved: a directory with users but no admin, or an empty
-            // directory, has nobody this notice is FOR — stop trying.
+            // Resolved: stop trying whatever the outcome.
             noticeRaised = true;
             noticeAttempting = false;
-            if (user === undefined)
+            const user = primaryAdmin(users);
+            if (user === undefined && users.length > 0) {
+                // Users exist but none is an admin: there is nobody this notice
+                // is FOR, and core would reject a userless notice here.
                 return;
+            }
             try {
                 await host.notify({ user, ...notice });
             }
@@ -115,17 +133,24 @@ export default async function createRecall(host, deps = {}) {
      *
      * - **current** — the row core's `embeddingModel` resolves to (`default:
      *   true`). The sweep re-embeds into it while older rows stay put.
-     * - **search** — the NEWEST row whose coverage is complete, else the
-     *   current one. "Newest" is `list()` order: core's registry enumerates
-     *   providers in load order and each provider's models in declaration
-     *   order, so the last complete row is the most recently registered
-     *   model that covers every item. Preferring the newest (rather than
-     *   "the current one when complete") is what makes the switch
-     *   self-correcting: the old index keeps answering only until a NEWER
-     *   complete model exists, whatever the settings say. The current model
-     *   is still the one being re-embedded into, so as soon as IT is
-     *   complete it is also the newest complete one (it was registered last
-     *   of the rows that matter) and wins.
+     * - **search** — the newest model whose coverage is complete, else the
+     *   current one (the Global Constraints' search-model rule). "Newest" is
+     *   `list()` order: core's registry enumerates providers in load order
+     *   and each provider's models in declaration order, so the highest
+     *   index is the most recently registered model.
+     *
+     * The scan walks the whole list backwards and takes the first COMPLETE
+     * row, with no shortcut past the current row: during a switch the
+     * current model's index is still empty while an older, complete one
+     * answers, and that older row can sit at ANY index — including below the
+     * current one. The common switch proves it: `3-small` -> `3-large` are
+     * two models of ONE provider, declared small-then-large, so the current
+     * row (`3-large`) is listed LAST and complete-`3-small` is listed
+     * BEFORE it. A rule that stopped at the current row would hand queries
+     * an empty index for the whole re-embed.
+     *
+     * Every row is a candidate on its own coverage; the current default is
+     * only the fallback for when NO row covers everything.
      */
     function pickSemantic(rows) {
         if (embeddings === undefined)
@@ -146,13 +171,12 @@ export default async function createRecall(host, deps = {}) {
                 return { embeddings, current, search: cached };
             }
         }
+        // The rule, literally: the highest-index row whose coverage is
+        // complete, else the current default. Coverage is per-row and asked
+        // of EVERY row — never skipped for the current one.
         let search = current;
         for (let index = rows.length - 1; index >= 0; index -= 1) {
             const row = rows[index];
-            if (row.model === current.model) {
-                search = row;
-                break;
-            }
             if (db().modelCoverage(row.model, row.local).complete) {
                 search = row;
                 break;

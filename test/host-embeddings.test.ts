@@ -139,7 +139,7 @@ interface Rig {
 }
 
 async function rig(
-	options: Omit<HostOptions, "root"> & { root: string; labelModel?: string },
+	options: Omit<HostOptions, "root"> & { root: string },
 ): Promise<Rig> {
 	let opened: RecallDb | undefined;
 	const result = await createRecall(fakeHost(options), {
@@ -220,24 +220,42 @@ async function seed(
 	}
 }
 
-describe("host.embeddings in recall", () => {	it("no re-embed when the default matches the label", async () => {
+describe("host.embeddings in recall", () => {
+	it("no re-embed when the default matches the label", async () => {
 		const root = await mkdtemp(join(tmpdir(), "recall-label-match-"));
 		try {
 			await seed(root, {
 				text: "canine knee operation",
 				vector: { model: LABEL, vec: [1, 0] },
 			});
-			const { surface, calls } = embeddings({ rows: [row(LABEL, { isDefault: true })] });
-			const { result, db, backfill } = await rig({
+			const { surface, calls } = embeddings({
+				rows: [row(LABEL, { isDefault: true })],
+				embed: (texts, opts) => ({
+					ok: true,
+					model: opts?.model ?? LABEL,
+					dimensions: 2,
+					vectors: texts.map(() => new Float32Array([1, 0])),
+				}),
+			});
+			const { result, db, backfill, search } = await rig({
 				root,
 				settings: {
 					embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
 				},
 				embeddings: surface,
+				entries: [messageEntry(1, 1, "canine knee operation")],
 			});
+			// The sweep found nothing pending: the inherited, correctly
+			// labelled rows are reused instead of re-embedded.
 			await backfill();
 			expect(calls).toEqual([]);
 			expect(db()!.listVectorsPage(LABEL, 0, 10)).toHaveLength(1);
+			// And the query path embeds with THAT model, so the inherited
+			// vectors are actually reachable.
+			const hits = await search("canine knee operation");
+			expect(hits.hits).toHaveLength(1);
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.opts?.model).toBe(LABEL);
 			await result.harnessShutdown?.({} as never, {} as never);
 		} finally {
 			await rm(root, { recursive: true, force: true });
@@ -351,16 +369,26 @@ describe("host.embeddings in recall", () => {	it("no re-embed when the default m
 		}
 	});
 
-	it("a model switch re-embeds in the background and keeps searching the old index until coverage", async () => {
-		const root = await mkdtemp(join(tmpdir(), "recall-switch-"));
+	/**
+	 * One switch scenario, parameterised by where the two models sit in
+	 * `list()` order. Core enumerates a provider's models in DECLARATION
+	 * order, so the same-provider switch (the common one) can list the old
+	 * model first OR the new one first — the rule must not depend on it.
+	 */
+	async function switchScenario(ordering: "old-first" | "new-first"): Promise<void> {
+		const root = await mkdtemp(join(tmpdir(), `recall-switch-${ordering}-`));
 		try {
 			// The old model covered the only item: its vectors are complete.
 			await seed(root, {
 				text: "canine knee operation",
 				vector: { model: OLD, vec: [1, 0] },
 			});
+			const rows =
+				ordering === "old-first"
+					? [row(OLD), row(NEW, { isDefault: true })]
+					: [row(NEW, { isDefault: true }), row(OLD)];
 			const { surface, calls } = embeddings({
-				rows: [row(NEW, { isDefault: true }), row(OLD, { local: false })],
+				rows,
 				embed: (texts, opts) => ({
 					ok: true,
 					model: opts?.model ?? NEW,
@@ -377,7 +405,8 @@ describe("host.embeddings in recall", () => {	it("no re-embed when the default m
 				embeddings: surface,
 				entries: [messageEntry(1, 1, "canine knee operation")],
 			});
-			// Before the sweep covers the new model, queries use the old index.
+			// Before the sweep covers the new model, queries use the OLD index
+			// (complete) — never the current model's empty one.
 			const early = await search("dog surgery");
 			expect(early.hits).toHaveLength(1);
 			expect(calls.at(-1)?.opts?.model).toBe(OLD);
@@ -396,6 +425,55 @@ describe("host.embeddings in recall", () => {	it("no re-embed when the default m
 			expect(calls.at(-1)?.opts?.timeoutMs).toBe(800);
 			await result.harnessShutdown?.({} as never, {} as never);
 		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}
+
+	it("a model switch re-embeds in the background and keeps searching the old index until coverage", async () => {
+		// Both list() orderings: a complete model registered BEFORE the
+		// current default must still answer (the [OI] same-provider switch
+		// lists small-then-large with large default LAST), and the mirrored
+		// ordering must behave identically.
+		await switchScenario("old-first");
+		await switchScenario("new-first");
+	});
+
+	it("a throwing embedding host during capture is contained, never an unhandled rejection", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-capture-throw-"));
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown) => rejections.push(reason);
+		process.on("unhandledRejection", onRejection);
+		const warnings: unknown[] = [];
+		const originalWarn = console.warn;
+		console.warn = (...args: unknown[]) => warnings.push(args);
+		try {
+			const { surface } = embeddings({
+				rows: [row(NEW, { isDefault: true })],
+				// The contract says `embed` never throws; a host that breaks it
+				// (an unbound bridge, a closed database after shutdown) must not
+				// take the process down from a fire-and-forget capture.
+				embed: () => {
+					throw new Error("bridge unavailable");
+				},
+			});
+			const { result } = await rig({
+				root,
+				embeddings: surface,
+				entries: [messageEntry(1, 1, "a passage to embed")],
+			});
+			await result.runSettled?.(
+				{ conversationId: 1 } as never,
+				{ entries: async () => ({ items: [messageEntry(1, 1, "a passage to embed")] }) } as never,
+				{} as never,
+			);
+			// Let the rejected capture work settle and Node's own detection run.
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(rejections).toEqual([]);
+			expect(warnings.some((entry) => String(entry).includes("embedding"))).toBe(true);
+			await result.harnessShutdown?.({} as never, {} as never);
+		} finally {
+			console.warn = originalWarn;
+			process.off("unhandledRejection", onRejection);
 			await rm(root, { recursive: true, force: true });
 		}
 	});
@@ -424,6 +502,94 @@ describe("host.embeddings in recall", () => {	it("no re-embed when the default m
 			expect(notified[0]?.user).toBe("alice");
 			expect(notified[0]?.kind).toBe("recall.embeddings-moved");
 			expect(notified[0]?.title).toBe("Recall embeddings now come from a provider");
+			await result.harnessShutdown?.({} as never, {} as never);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("the notice goes out userless on an empty (single-operator) server", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-notice-userless-"));
+		try {
+			const notified: { user?: string; kind?: string }[] = [];
+			const { surface } = embeddings({ rows: [] });
+			const { result } = await rig({
+				root,
+				settings: {
+					embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+				},
+				embeddings: surface,
+				// An unclaimed server: nobody to name, but core still delivers
+				// the notice (notifyExtension demands a user only on a CLAIMED
+				// directory).
+				users: [],
+				notify: async (input) => {
+					notified.push(input as never);
+				},
+			});
+			await vi.waitFor(() => expect(notified).toHaveLength(1));
+			expect(notified[0]?.user).toBeUndefined();
+			expect(notified[0]?.kind).toBe("recall.embeddings-moved");
+			await result.harnessShutdown?.({} as never, {} as never);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("a claimed server with no admin is the one case the notice is dropped for", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-notice-no-admin-"));
+		try {
+			const notified: unknown[] = [];
+			const { surface } = embeddings({ rows: [] });
+			const { result, search } = await rig({
+				root,
+				settings: {
+					embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+				},
+				embeddings: surface,
+				// Users exist, so core would REJECT a userless notice; nobody
+				// carries the admin flag, so there is no valid recipient.
+				users: [
+					{ user: "bob", admin: false },
+					{ user: "carol", admin: false },
+				],
+				notify: async (input) => {
+					notified.push(input);
+				},
+			});
+			await search("clinic");
+			await search("clinic");
+			expect(notified).toEqual([]);
+			await result.harnessShutdown?.({} as never, {} as never);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("the notice is dropped on a claimed server with no admin", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-notice-no-admin-"));
+		try {
+			const notified: unknown[] = [];
+			const { surface } = embeddings({ rows: [] });
+			const { result, search } = await rig({
+				root,
+				settings: {
+					embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+				},
+				embeddings: surface,
+				// Users exist, so core would REJECT a userless notice; nobody is
+				// an admin, so there is no recipient this notice is for.
+				users: [
+					{ user: "bob", admin: false },
+					{ user: "carol", admin: false },
+				],
+				notify: async (input) => {
+					notified.push(input);
+				},
+			});
+			await search("clinic");
+			await search("clinic");
+			expect(notified).toEqual([]);
 			await result.harnessShutdown?.({} as never, {} as never);
 		} finally {
 			await rm(root, { recursive: true, force: true });

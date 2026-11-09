@@ -138,8 +138,20 @@ export async function embedPending(db, embeddings, model, modelIsLocal, entry, l
             target.push({ id: item.id, text: redact(passage.text) });
     }
     const upsert = (itemId, storedModel, vec) => db.upsertVector(itemId, storedModel, vec);
-    await embedClass(embeddings, upsert, normal, "normal", model, warn);
-    await embedClass(embeddings, upsert, local, "local-only", model, warn);
+    // Same containment as the capture page: the sweep is awaited by a job
+    // phase, and a throwing host must leave the remaining items pending for
+    // the next pass rather than fail the phase.
+    for (const [batch, confidentiality] of [
+        [normal, "normal"],
+        [local, "local-only"],
+    ]) {
+        try {
+            await embedClass(embeddings, upsert, batch, confidentiality, model, warn);
+        }
+        catch (error) {
+            warn("failed", `pending passage embedding failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        }
+    }
 }
 /**
  * Add a semantic arm over `model`'s index. The QUERY is embedded with

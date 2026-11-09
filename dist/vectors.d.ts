@@ -11,12 +11,13 @@ export interface EmbeddingModelRow {
     /** Core's gate: the admin listed it AND its provider did not veto. */
     readonly local: boolean;
     /**
-     * The row the live `embeddingModel` setting resolves to. Core's
-     * registry emits this on every row; the published `SigrunHost`
-     * contract type omits it (see the task report), so recall declares
-     * it structurally and treats an absent field as `false`.
+     * True on the one row the live `embeddingModel` setting resolves to.
+     * Every other row carries `false`. Core's published `SigrunHost`
+     * contract declares this (`src/extension.ts`: "True on the one row the
+     * `embeddingModel` setting resolves to"), so recall reads it directly
+     * rather than defending against its absence.
      */
-    readonly default?: boolean;
+    readonly default: boolean;
     readonly status: "not_configured" | "degraded" | "ready";
 }
 /**

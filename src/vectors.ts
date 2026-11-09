@@ -15,12 +15,13 @@ export interface EmbeddingModelRow {
 	/** Core's gate: the admin listed it AND its provider did not veto. */
 	readonly local: boolean;
 	/**
-	 * The row the live `embeddingModel` setting resolves to. Core's
-	 * registry emits this on every row; the published `SigrunHost`
-	 * contract type omits it (see the task report), so recall declares
-	 * it structurally and treats an absent field as `false`.
+	 * True on the one row the live `embeddingModel` setting resolves to.
+	 * Every other row carries `false`. Core's published `SigrunHost`
+	 * contract declares this (`src/extension.ts`: "True on the one row the
+	 * `embeddingModel` setting resolves to"), so recall reads it directly
+	 * rather than defending against its absence.
 	 */
-	readonly default?: boolean;
+	readonly default: boolean;
 	readonly status: "not_configured" | "degraded" | "ready";
 }
 
@@ -214,8 +215,22 @@ export async function embedPending(
 	}
 	const upsert = (itemId: number, storedModel: string, vec: Float32Array) =>
 		db.upsertVector(itemId, storedModel, vec);
-	await embedClass(embeddings, upsert, normal, "normal", model, warn);
-	await embedClass(embeddings, upsert, local, "local-only", model, warn);
+	// Same containment as the capture page: the sweep is awaited by a job
+	// phase, and a throwing host must leave the remaining items pending for
+	// the next pass rather than fail the phase.
+	for (const [batch, confidentiality] of [
+		[normal, "normal"],
+		[local, "local-only"],
+	] as const) {
+		try {
+			await embedClass(embeddings, upsert, batch, confidentiality, model, warn);
+		} catch (error) {
+			warn(
+				"failed",
+				`pending passage embedding failed: ${error instanceof Error ? error.message : "unknown error"}`,
+			);
+		}
+	}
 }
 
 /**

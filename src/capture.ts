@@ -114,6 +114,22 @@ async function embedPage(
 	const warn = deps.warn ?? DEFAULT_EMBEDDING_WARNINGS;
 	const upsert = (itemId: number, model: string, vec: Float32Array) =>
 		deps.db.upsertVector(itemId, model, vec);
-	await embedClass(embeddings, upsert, normal, "normal", undefined, warn);
-	await embedClass(embeddings, upsert, local, "local-only", undefined, warn);
+	// Containment: `embed` is contracted never to throw, but this promise is
+	// fire-and-forget (nobody awaits a capture's embedding), so a throw from
+	// a host that breaks the contract — a bridge that never bound, a closed
+	// database after shutdown — must be logged here, NOT left to become an
+	// unhandled rejection. The items stay lexical-only either way.
+	for (const [batch, confidentiality] of [
+		[normal, "normal"],
+		[local, "local-only"],
+	] as const) {
+		try {
+			await embedClass(embeddings, upsert, batch, confidentiality, undefined, warn);
+		} catch (error) {
+			warn(
+				"failed",
+				`passage embedding failed: ${error instanceof Error ? error.message : "unknown error"}`,
+			);
+		}
+	}
 }
