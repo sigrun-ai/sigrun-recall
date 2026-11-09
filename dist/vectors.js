@@ -1,10 +1,10 @@
 import { passagesOf } from "./passages.js";
 import { redact } from "./redact.js";
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
-export function createSqliteVectorIndex(db, pageSize = 2000) {
+export function createSqliteVectorIndex(db, model, pageSize = 2000) {
     return {
         upsert(itemId, vec) {
-            db.upsertVector(itemId, vec);
+            db.upsertVector(itemId, model, vec);
         },
         query(vec, k, signal) {
             if (k <= 0)
@@ -14,7 +14,7 @@ export function createSqliteVectorIndex(db, pageSize = 2000) {
             for (let page = 0; page < 50; page += 1) {
                 if (signal?.aborted === true)
                     break;
-                const rows = db.listVectorsPage(after, pageSize);
+                const rows = db.listVectorsPage(model, after, pageSize);
                 for (const row of rows) {
                     const score = cosine(vec, row.vec);
                     best.push({ itemId: row.itemId, score });
@@ -47,9 +47,9 @@ function cosine(left, right) {
     return dot / Math.sqrt(leftNorm * rightNorm);
 }
 /** Embed up to `limit` unembedded conversation passages from their source entries. */
-export async function embedPending(db, embedder, index, entry, limit = 500) {
+export async function embedPending(db, embedder, index, model, entry, limit = 500) {
     const candidates = [];
-    for (const item of db.listUnembeddedItems(limit, embedder.local)) {
+    for (const item of db.listUnembeddedItems(model, limit, embedder.local)) {
         if (item.kind === "doc") {
             if (item.doc === null)
                 continue;

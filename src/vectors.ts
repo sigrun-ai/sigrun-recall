@@ -15,10 +15,14 @@ export interface VectorIndex {
 }
 
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
-export function createSqliteVectorIndex(db: RecallDb, pageSize = 2000): VectorIndex {
+export function createSqliteVectorIndex(
+	db: RecallDb,
+	model: string,
+	pageSize = 2000,
+): VectorIndex {
 	return {
 		upsert(itemId, vec) {
-			db.upsertVector(itemId, vec);
+			db.upsertVector(itemId, model, vec);
 		},
 		query(vec, k, signal) {
 			if (k <= 0) return [];
@@ -26,7 +30,7 @@ export function createSqliteVectorIndex(db: RecallDb, pageSize = 2000): VectorIn
 			let after = 0;
 			for (let page = 0; page < 50; page += 1) {
 				if (signal?.aborted === true) break;
-				const rows = db.listVectorsPage(after, pageSize);
+				const rows = db.listVectorsPage(model, after, pageSize);
 				for (const row of rows) {
 					const score = cosine(vec, row.vec);
 					best.push({ itemId: row.itemId, score });
@@ -63,11 +67,12 @@ export async function embedPending(
 	db: RecallDb,
 	embedder: Embedder,
 	index: VectorIndex,
+	model: string,
 	entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>,
 	limit = 500,
 ): Promise<void> {
 	const candidates = [];
-	for (const item of db.listUnembeddedItems(limit, embedder.local)) {
+	for (const item of db.listUnembeddedItems(model, limit, embedder.local)) {
 		if (item.kind === "doc") {
 			if (item.doc === null) continue;
 			const text = db.docText(item.doc, item.offset, item.length);

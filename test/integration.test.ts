@@ -41,7 +41,7 @@ async function host(root: string, embedding = false) {
 describe("factory integrations", () => {
 	it("an artifact written by afterTool opens through the separately constructed tool store", async () => {
 		const root = await mkdtemp(join(tmpdir(), "recall-integration-artifact-"));
-		const result = createRecall(await host(root));
+		const result = await createRecall(await host(root));
 		const hook = (result.extension!.hooks![0]!.handlers as {
 			afterTool(call: ToolHookCall, result: ToolExecutionResult, api: never, context: Context): Promise<ToolExecutionResult | undefined>;
 		}).afterTool;
@@ -71,7 +71,7 @@ describe("factory integrations", () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
 			new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), { status: 200 }),
 		);
-		const result = createRecall(await host(root, true));
+		const result = await createRecall(await host(root, true));
 		const route = result.routes!.find((candidate) => candidate.path === "search")!;
 		// Seed the real vector index through the same configured service used by capture.
 		const backfill = result.routes!.find((candidate) => candidate.path === "backfill")!;

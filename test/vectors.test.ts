@@ -12,6 +12,8 @@ import {
   embedPending,
 } from "../src/vectors.js";
 
+const MODEL = "acme-local/embed-1";
+
 function meta(): SessionMeta {
   return {
     pinned: false,
@@ -68,7 +70,8 @@ describe("vectors", () => {
     await embedPending(
       db,
       { local: false, embed },
-      createSqliteVectorIndex(db),
+      createSqliteVectorIndex(db, MODEL),
+      MODEL,
       async () => entry("text"),
       500,
     );
@@ -88,7 +91,7 @@ describe("vectors", () => {
         meta: async () => meta(),
         now: () => 1_700_000_000_000,
         embedder,
-        index: createSqliteVectorIndex(db),
+        index: createSqliteVectorIndex(db, MODEL),
       },
       1,
       async () => ({ items: [entry("private semantic text")] }),
@@ -110,7 +113,7 @@ describe("vectors", () => {
         meta: async () => meta(),
         now: () => 1_700_000_000_000,
         embedder,
-        index: createSqliteVectorIndex(db),
+        index: createSqliteVectorIndex(db, MODEL),
       },
       1,
       async () => ({
@@ -148,7 +151,7 @@ describe("vectors", () => {
       },
       "canine knee operation",
     );
-    const index = createSqliteVectorIndex(db);
+    const index = createSqliteVectorIndex(db, MODEL);
     index.upsert(1, new Float32Array([1, 0]));
     const embedder: Embedder = {
       local: false,
@@ -191,7 +194,8 @@ describe("vectors", () => {
     await embedPending(
       db,
       { local: false, embed },
-      createSqliteVectorIndex(db),
+      createSqliteVectorIndex(db, MODEL),
+      MODEL,
       async () => undefined,
     );
     expect(embed).not.toHaveBeenCalled();
@@ -218,15 +222,52 @@ describe("vectors", () => {
     const embed = vi.fn(async (_texts: readonly string[]) => [
       new Float32Array([1]),
     ]);
-    const index = createSqliteVectorIndex(db);
+    const index = createSqliteVectorIndex(db, MODEL);
     await embedPending(
       db,
       { local: false, embed },
       index,
+      MODEL,
       async () => undefined,
     );
     expect(embed).toHaveBeenCalledWith(["the harbourside bakery sells bread"]);
-    expect(db.listUnembeddedItems(10, false)).toHaveLength(0);
+    expect(db.listUnembeddedItems(MODEL, 10, false)).toHaveLength(0);
     db.close();
+  });
+});
+
+describe("model-scoped vector index", () => {
+  it("query scans only the given model", () => {
+    const db = RecallDb.open(":memory:");
+    try {
+      db.insertItem(
+        {
+          conversationId: 1,
+          owner: "alice",
+          kind: "turn",
+          entryId: 1,
+          messageIndex: 0,
+          blockIndex: 0,
+          offset: 0,
+          length: 4,
+          artifact: null,
+          doc: null,
+          job: false,
+          cls: "normal",
+          at: 1_700_000_000_000,
+          title: null,
+        },
+        "text",
+      );
+      const older = createSqliteVectorIndex(db, "openai/text-embedding-3-small");
+      const newer = createSqliteVectorIndex(db, "acme-local/embed-2");
+      older.upsert(1, new Float32Array([1, 0]));
+      newer.upsert(1, new Float32Array([0, 1]));
+
+      expect(older.query(new Float32Array([1, 0]), 10)).toEqual([{ itemId: 1, score: 1 }]);
+      expect(newer.query(new Float32Array([1, 0]), 10)).toEqual([{ itemId: 1, score: 0 }]);
+    } finally {
+      db.close();
+    }
   });
 });

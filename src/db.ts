@@ -150,9 +150,11 @@ const SCHEMA = `
 		PRIMARY KEY (conversationId, messageKey)
 	);
 	CREATE TABLE IF NOT EXISTS vectors (
-		itemId INTEGER PRIMARY KEY,
+		itemId INTEGER NOT NULL,
+		model TEXT NOT NULL,
 		dim INTEGER NOT NULL,
-		vec BLOB NOT NULL
+		vec BLOB NOT NULL,
+		PRIMARY KEY (itemId, model)
 	);
 	CREATE TABLE IF NOT EXISTS state (
 		key TEXT PRIMARY KEY,
@@ -163,16 +165,25 @@ const SCHEMA = `
 	);
 `;
 
-/** The extension's private SQLite index. Callers close it during shutdown. */
+/**
+ * The extension's private SQLite index. Callers close it during shutdown.
+ *
+ * `labelModel` is the model the v4 migration stamps on the vectors it
+ * inherits from the pre-model schema: the caller passes
+ * `openai/<old embedding model>` only when the old settings named a
+ * model AND pointed at [OI]'s own endpoint (config's `migrationLabel`).
+ * Without a label those rows land under `model = ""` — a key no real
+ * model has, so they are re-embedded and later deleted.
+ */
 export class RecallDb {
 	private constructor(private readonly db: DatabaseSync) {}
 
-	static open(path: string): RecallDb {
+	static open(path: string, labelModel?: string): RecallDb {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 		const db = new DatabaseSync(path);
 		try {
 			const migrated = new RecallDb(db);
-			migrated.migrate();
+			migrated.migrate(labelModel);
 			return migrated;
 		} catch (error) {
 			db.close();
@@ -180,7 +191,7 @@ export class RecallDb {
 		}
 	}
 
-	private migrate(): void {
+	private migrate(labelModel?: string): void {
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
 			this.db.exec(
@@ -191,6 +202,9 @@ export class RecallDb {
 				.get() as { version: number } | undefined;
 			if (current === undefined) {
 				this.db.exec(SCHEMA);
+				// Stamped 3 so the v4 rebuild below runs on this path too: a
+				// database with tables but no version row may carry the OLD
+				// vectors shape, and SCHEMA's `IF NOT EXISTS` never reshapes it.
 				this.db.prepare("INSERT INTO schema_version (version) VALUES (3)").run();
 			} else if (current.version < 2) {
 				const itemColumns = this.db.prepare("PRAGMA table_info(items)").all() as { name: string }[];
@@ -269,6 +283,55 @@ export class RecallDb {
 					);
 				`);
 				this.db.prepare("UPDATE schema_version SET version = 3").run();
+			}
+
+			const afterV3 = this.db
+				.prepare("SELECT version FROM schema_version")
+				.get() as { version: number };
+			if (afterV3.version < 4) {
+				// Rebuild vectors keyed by (itemId, model) so vectors from two
+				// models can never be compared. Inherited rows carry the label the
+				// caller derived from the old settings (or "", never a real
+				// model). The table may be absent (a pre-v3 fixture) or already
+				// carry `model` (SCHEMA's fresh create) — both must be idempotent.
+				const vectorColumns = this.db
+					.prepare("PRAGMA table_info(vectors)")
+					.all() as { name: string }[];
+				if (vectorColumns.length === 0) {
+					this.db.exec(`
+						CREATE TABLE vectors (
+							itemId INTEGER NOT NULL,
+							model TEXT NOT NULL,
+							dim INTEGER NOT NULL,
+							vec BLOB NOT NULL,
+							PRIMARY KEY (itemId, model)
+						);
+					`);
+				} else if (!vectorColumns.some(({ name }) => name === "model")) {
+					this.db.exec(`
+						ALTER TABLE vectors RENAME TO vectors_v3;
+						CREATE TABLE vectors (
+							itemId INTEGER NOT NULL,
+							model TEXT NOT NULL,
+							dim INTEGER NOT NULL,
+							vec BLOB NOT NULL,
+							PRIMARY KEY (itemId, model)
+						);
+					`);
+					this.db
+						.prepare(
+							`INSERT INTO vectors (itemId, model, dim, vec)
+							 SELECT itemId, ?, dim, vec FROM vectors_v3`,
+						)
+						.run(labelModel ?? "");
+					this.db.exec("DROP TABLE vectors_v3");
+				}
+				// The model-scoped page scan is `model = ? AND itemId > ?`, so the
+				// (model, itemId) index makes it a range scan even mid-switch.
+				this.db.exec(
+					"CREATE INDEX IF NOT EXISTS vectors_model ON vectors (model, itemId)",
+				);
+				this.db.prepare("UPDATE schema_version SET version = 4").run();
 			}
 
 			this.db.exec("COMMIT");
@@ -624,23 +687,37 @@ export class RecallDb {
 		return rows.map((row) => row.rowid);
 	}
 
-	upsertVector(itemId: number, vec: Float32Array): void {
+	upsertVector(itemId: number, model: string, vec: Float32Array): void {
 		const bytes = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
 		this.db
 			.prepare(
-				`INSERT INTO vectors (itemId, dim, vec) VALUES (?, ?, ?)
-				 ON CONFLICT(itemId) DO UPDATE SET dim = excluded.dim, vec = excluded.vec`,
+				`INSERT INTO vectors (itemId, model, dim, vec) VALUES (?, ?, ?, ?)
+				 ON CONFLICT(itemId, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec`,
 			)
-			.run(itemId, vec.length, bytes);
+			.run(itemId, model, vec.length, bytes);
 	}
 
-	listVectorsPage(after: number, limit: number): { itemId: number; vec: Buffer }[] {
+	listVectorsPage(
+		model: string,
+		after: number,
+		limit: number,
+	): { itemId: number; vec: Buffer }[] {
 		// SAFETY: the vectors schema stores integer item ids and Float32 BLOB bytes.
 		return this.db
 			.prepare(
-				"SELECT itemId, vec FROM vectors WHERE itemId > ? ORDER BY itemId LIMIT ?",
+				`SELECT itemId, vec FROM vectors WHERE model = ? AND itemId > ?
+				 ORDER BY itemId LIMIT ?`,
 			)
-			.all(after, limit) as unknown as { itemId: number; vec: Buffer }[];
+			.all(model, after, limit) as unknown as { itemId: number; vec: Buffer }[];
+	}
+
+	/**
+	 * Drop every vector that is not the given model's — the switch's cleanup:
+	 * only called once the new model covers every item, so the old index is
+	 * never lost item by item.
+	 */
+	deleteVectorsExcept(model: string): void {
+		this.db.prepare("DELETE FROM vectors WHERE model != ?").run(model);
 	}
 
 	state(key: string): string | undefined {
@@ -658,17 +735,83 @@ export class RecallDb {
 			.run(key, value);
 	}
 
-	listUnembeddedItems(limit: number, includeLocalOnly: boolean): ItemRow[] {
+	/**
+	 * Items with no vector for `model` — the embedPending work list. Items a
+	 * model may never embed (a non-local model's local-only items) are
+	 * filtered out by `includeLocalOnly`, not treated as pending. `after`
+	 * pages by item id for {@link modelCoverage}'s bounded scan.
+	 */
+	listUnembeddedItems(
+		model: string,
+		limit: number,
+		includeLocalOnly: boolean,
+		after = 0,
+	): ItemRow[] {
 		// SAFETY: the LEFT JOIN projects the typed items schema only.
 		const rows = this.db
 			.prepare(
-				`SELECT items.* FROM items LEFT JOIN vectors ON vectors.itemId = items.id
-				 WHERE vectors.itemId IS NULL AND items.kind IN ('turn', 'tool', 'doc')
+				`SELECT items.* FROM items
+				 LEFT JOIN vectors ON vectors.itemId = items.id AND vectors.model = ?
+				 WHERE vectors.itemId IS NULL AND items.id > ?
+				 AND items.kind IN ('turn', 'tool', 'doc')
 				 AND (items.kind = 'doc' OR (items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL))
 				 AND (? OR items.cls != 'local-only') ORDER BY items.id LIMIT ?`,
 			)
-			.all(includeLocalOnly ? 1 : 0, limit) as unknown as StoredItemRow[];
+			.all(model, after, includeLocalOnly ? 1 : 0, limit) as unknown as StoredItemRow[];
 		return rows.map((row) => ({ ...row, job: row.job === 1 }));
+	}
+
+	/**
+	 * Whether the sweep could embed this item at all: a document item whose
+	 * document still exists, or a turn/tool item whose entry is addressable.
+	 * This is the structural "dangling" class {@link modelCoverage}
+	 * subtracts, and the same class `embedPending` skips — so the coverage
+	 * probe can never call an item covered that the sweep would refuse.
+	 *
+	 * Runtime skips are NOT dangling: an entry that fails to load or a
+	 * passage that no longer matches stays pending, so both the sweep and
+	 * the probe retry it rather than declare it done.
+	 */
+	private embeddable(item: ItemRow): boolean {
+		if (item.kind === "doc") {
+			return item.doc !== null && this.docExists(item.doc);
+		}
+		return (
+			item.conversationId !== null &&
+			item.entryId !== null &&
+			item.messageIndex !== null
+		);
+	}
+
+	private docExists(doc: number): boolean {
+		return this.db.prepare("SELECT 1 FROM docs WHERE id = ?").get(doc) !== undefined;
+	}
+
+	/**
+	 * Whether `model` has a vector for every item it can embed: the eligible
+	 * list `listUnembeddedItems` returns, minus the items `embeddable` calls
+	 * structurally dangling, is empty. Local-only items a non-local model may
+	 * never embed are not counted against it (`includeLocalOnly`, exactly as
+	 * for the sweep).
+	 *
+	 * The caller deletes the previous model's rows once this says complete,
+	 * which is irreversible — so the probe returns `complete: false` the
+	 * moment ONE embeddable item lacks a vector, and gives up (also `false`)
+	 * rather than guess when the dangling backlog exceeds its bounded scan.
+	 */
+	modelCoverage(model: string, includeLocalOnly: boolean): { complete: boolean } {
+		const PAGE = 200;
+		const MAX_PAGES = 25;
+		let after = 0;
+		for (let page = 0; page < MAX_PAGES; page += 1) {
+			const rows = this.listUnembeddedItems(model, PAGE, includeLocalOnly, after);
+			for (const item of rows) {
+				if (this.embeddable(item)) return { complete: false };
+			}
+			if (rows.length < PAGE) return { complete: true };
+			after = rows.at(-1)!.id;
+		}
+		return { complete: false };
 	}
 
 	cursor(conversationId: number): number | undefined {

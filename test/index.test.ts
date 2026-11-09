@@ -16,7 +16,7 @@ describe("createRecall", () => {
   it("defers the database until use and closes it at harness shutdown", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-lifecycle-"));
 		let opened = 0;
-		const result = createRecall(
+		const result = await createRecall(
 			{ stores: { paths: { data: root }, settings: { get: async () => ({}) } } } as never,
 			{
 				openDb: (path) => {
@@ -38,7 +38,7 @@ describe("createRecall", () => {
 
   it("factory result declares the backfill job, both tools, both hooks and both routes", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-index-"));
-    const result = createRecall({
+    const result = await createRecall({
       stores: {
         paths: { data: root },
         settings: { get: async () => ({}) },
@@ -72,7 +72,7 @@ describe("createRecall", () => {
       try {
         const root = await mkdtemp(join(tmpdir(), "recall-drain-"));
         let closeCount = 0;
-        const result = createRecall(
+        const result = await createRecall(
           {
             stores: {
               paths: { data: root },
@@ -148,9 +148,12 @@ describe("createRecall", () => {
 
   it("a transient settings failure degrades search to lexical and a later call retries", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
-    let failures = 1;
+    // Two failures: the factory reads settings once for the v4 migration
+    // label (best effort, silent), then the first search call degrades and
+    // the second succeeds — one logged degradation.
+    let failures = 2;
     const embed = vi.fn(async (_texts: readonly string[]) => [new Float32Array([1])]);
-    const result = createRecall(
+    const result = await createRecall(
       {
         stores: {
           paths: { data: root },
@@ -207,5 +210,84 @@ describe("createRecall", () => {
     expect(errors).toHaveLength(1);
     await result.harnessShutdown?.({} as never, {} as never);
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("the v4 migration label comes from the factory's settings read", () => {
+  it("the factory hands the migration the label the old settings imply", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-label-"));
+    const labels: (string | undefined)[] = [];
+    try {
+      const result = await createRecall(
+        {
+          stores: {
+            paths: { data: root },
+            settings: {
+              get: async () => ({
+                embedding: {
+                  url: "https://api.openai.com/v1",
+                  model: "text-embedding-3-small",
+                },
+              }),
+            },
+            secrets: { get: async () => undefined },
+          },
+          conversations: {
+            meta: async () => ({ owner: "alice" }),
+          },
+        } as never,
+        {
+          openDb: (path, labelModel) => {
+            labels.push(labelModel);
+            return RecallDb.open(path, labelModel);
+          },
+        },
+      );
+      // The database opens lazily, so drive one route to force it open.
+      await result.routes![0]!.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(labels).toEqual(["openai/text-embedding-3-small"]);
+      await result.harnessShutdown?.({} as never, {} as never);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an unreadable settings store costs only the label, never the extension", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-label-fail-"));
+    const labels: (string | undefined)[] = [];
+    try {
+      const result = await createRecall(
+        {
+          stores: {
+            paths: { data: root },
+            settings: {
+              get: async () => {
+                throw new Error("settings unreadable");
+              },
+            },
+            secrets: { get: async () => undefined },
+          },
+          conversations: { meta: async () => ({ owner: "alice" }) },
+        } as never,
+        {
+          openDb: (path, labelModel) => {
+            labels.push(labelModel);
+            return RecallDb.open(path, labelModel);
+          },
+        },
+      );
+      const response = await result.routes![0]!.handler(
+        new Request("https://example.invalid/search?q=clinic"),
+        { principal: { user: "alice", admin: false } } as never,
+      );
+      expect(response.status).toBe(200);
+      expect(labels).toEqual([undefined]);
+      await result.harnessShutdown?.({} as never, {} as never);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

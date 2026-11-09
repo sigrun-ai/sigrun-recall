@@ -288,7 +288,7 @@ describe("published hooks", () => {
   it("the factory result publishes exactly recall.index, recall.remove, recall.search", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-hooks-"));
     roots.push(root);
-    const result = createRecall({
+    const result = await createRecall({
       stores: {
         paths: { data: root },
         settings: { get: async () => ({}) },

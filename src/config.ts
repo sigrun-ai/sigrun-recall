@@ -80,6 +80,50 @@ export async function resolveSettings(store: SettingsReader): Promise<RecallSett
 	return settings;
 }
 
+/**
+ * The model label the v4 vector migration stamps on existing rows, from
+ * the RAW old settings: `openai/<embedding.model>` only when the old
+ * settings named a model AND pointed at [OI]'s own endpoint. Any other
+ * endpoint might have served a different model under that name — the
+ * silent mismatch the model-keyed vectors exist to forbid — so those
+ * rows stay unlabelled (`model = ""`, which never matches a real model)
+ * and are re-embedded.
+ */
+export function migrationLabel(raw: Record<string, unknown>): string | undefined {
+	const embedding = raw.embedding;
+	if (typeof embedding !== "object" || embedding === null) return undefined;
+	const { url, model } = embedding as Record<string, unknown>;
+	if (typeof url !== "string" || typeof model !== "string" || model === "") return undefined;
+	let hostname: string;
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return undefined;
+	}
+	return hostname === "api.openai.com" ? `openai/${model}` : undefined;
+}
+
+/**
+ * The model identity the legacy (pre-provider) embedder's vectors carry,
+ * from the LIVE settings: the migration label where that rule applies
+ * (`openai/<model>` against [OI]'s own endpoint, so an upgraded install
+ * finds its inherited rows), else a host-qualified name no provider model
+ * can collide with — two endpoints never share a vector space, even when
+ * they serve the same model NAME.
+ *
+ * Task 9 replaces the legacy embedder with `host.embeddings`; this naming
+ * only has to keep today's vectors honest until then.
+ */
+export function legacyEmbeddingModel(embedding: { url: string; model: string }): string {
+	const label = migrationLabel({ embedding });
+	if (label !== undefined) return label;
+	try {
+		return `legacy/${new URL(embedding.url).hostname}/${embedding.model}`;
+	} catch {
+		return `legacy/${embedding.model}`;
+	}
+}
+
 export async function resolveUserSettings(
 	store: SettingsReader,
 ): Promise<UserRecallSettings> {

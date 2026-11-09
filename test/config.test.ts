@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	migrationLabel,
 	resolveSettings,
 	resolveUserSettings,
 	type SettingsReader,
@@ -28,4 +29,23 @@ describe("settings", () => {
 			warn.mockRestore();
 		}
 	});
+});
+
+describe("migration label", () => {
+  it("labels the old model only for OpenAI's own endpoint", () => {
+    expect(
+      migrationLabel({
+        embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+      }),
+    ).toBe("openai/text-embedding-3-small");
+    // Any other endpoint might have served a different model under that name.
+    expect(
+      migrationLabel({
+        embedding: { url: "https://example.invalid/v1", model: "text-embedding-3-small" },
+      }),
+    ).toBeUndefined();
+    expect(migrationLabel({ embedding: { url: "https://api.openai.com/v1" } })).toBeUndefined();
+    expect(migrationLabel({ embedding: { url: "not a url", model: "m" } })).toBeUndefined();
+    expect(migrationLabel({})).toBeUndefined();
+  });
 });

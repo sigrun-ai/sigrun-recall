@@ -4,6 +4,8 @@ import { createEmbedder } from "../src/embed.js";
 import { createVectorArm, createSqliteVectorIndex } from "../src/vectors.js";
 import { RecallDb } from "../src/db.js";
 
+const MODEL = "acme-local/embed-1";
+
 const openDatabases: RecallDb[] = [];
 afterEach(() => {
   for (const db of openDatabases.splice(0)) db.close();
@@ -68,7 +70,7 @@ describe("embed", () => {
     );
     const db = RecallDb.open(":memory:");
     openDatabases.push(db);
-    const arm = createVectorArm(embedder, createSqliteVectorIndex(db), 800);
+    const arm = createVectorArm(embedder, createSqliteVectorIndex(db, MODEL), 800);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = arm.query("semantic", 10);
     await vi.advanceTimersByTimeAsync(800);
@@ -79,7 +81,7 @@ describe("embed", () => {
   it("the paged cosine scan returns the nearest itemIds and never reads more than pageSize rows per page", () => {
     const db = RecallDb.open(":memory:");
     openDatabases.push(db);
-    const index = createSqliteVectorIndex(db, 2);
+    const index = createSqliteVectorIndex(db, MODEL, 2);
     index.upsert(1, new Float32Array([1, 0]));
     index.upsert(2, new Float32Array([0, 1]));
     index.upsert(3, new Float32Array([1, 1]));
@@ -95,7 +97,7 @@ describe("embed", () => {
   it("an aborted signal stops the scan between pages and returns the partial best", () => {
     const db = RecallDb.open(":memory:");
     openDatabases.push(db);
-    const index = createSqliteVectorIndex(db, 1);
+    const index = createSqliteVectorIndex(db, MODEL, 1);
     index.upsert(1, new Float32Array([1, 0]));
     index.upsert(2, new Float32Array([0, 1]));
     const controller = new AbortController();

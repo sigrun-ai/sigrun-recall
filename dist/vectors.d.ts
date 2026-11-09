@@ -10,8 +10,8 @@ export interface VectorIndex {
     }[];
 }
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
-export declare function createSqliteVectorIndex(db: RecallDb, pageSize?: number): VectorIndex;
+export declare function createSqliteVectorIndex(db: RecallDb, model: string, pageSize?: number): VectorIndex;
 /** Embed up to `limit` unembedded conversation passages from their source entries. */
-export declare function embedPending(db: RecallDb, embedder: Embedder, index: VectorIndex, entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>, limit?: number): Promise<void>;
+export declare function embedPending(db: RecallDb, embedder: Embedder, index: VectorIndex, model: string, entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>, limit?: number): Promise<void>;
 /** Add a semantic arm that degrades to lexical search on embedding failure. */
 export declare function createVectorArm(embedder: Embedder, index: VectorIndex, timeoutMs: number): VectorArm;

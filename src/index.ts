@@ -14,7 +14,7 @@ import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
-import { resolveSettings, resolveUserSettings } from "./config.js";
+import { legacyEmbeddingModel, migrationLabel, resolveSettings, resolveUserSettings } from "./config.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
 import { createSearcher } from "./search.js";
@@ -35,7 +35,7 @@ export {
 } from "./hooks.js";
 
 export interface FactoryDeps {
-	openDb?: (path: string) => RecallDb;
+	openDb?: (path: string, labelModel?: string) => RecallDb;
 	now?: () => number;
 	/** Test seam: fetch implementation for the embeddings endpoint. */
 	fetchImpl?: typeof fetch;
@@ -44,11 +44,24 @@ export interface FactoryDeps {
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
+ *
+ * Async for ONE reason: the v4 vectors migration stamps the vectors it
+ * inherits from the pre-model schema with the model the OLD settings named,
+ * and that label must be known before the database is first opened (which
+ * happens lazily, from synchronous call sites).
  */
-export default function createRecall(
+export default async function createRecall(
 	host: SigrunHost,
 	deps: FactoryDeps = {},
-): SigrunExtensionResult {
+): Promise<SigrunExtensionResult> {
+	// Best effort: an unreadable settings file only costs the label, so the
+	// inherited rows are re-embedded instead of being trusted.
+	let labelModel: string | undefined;
+	try {
+		labelModel = migrationLabel(await host.stores.settings.get());
+	} catch {
+		labelModel = undefined;
+	}
 	let database: RecallDb | undefined;
 	let embedder: ReturnType<typeof createEmbedder> | undefined;
 	let embedderError: unknown;
@@ -68,6 +81,7 @@ export default function createRecall(
 	function db(): RecallDb {
 		database ??= (deps.openDb ?? RecallDb.open)(
 			join(host.stores.paths.data, "recall.db"),
+			labelModel,
 		);
 		return database;
 	}
@@ -85,9 +99,15 @@ export default function createRecall(
 			);
 			embeddingKey = key;
 		}
+		// The legacy embedder's own model identity: the same label the v4
+		// migration gives its rows when the endpoint is [OI]'s, else a
+		// host-qualified name no provider model can collide with (Task 9
+		// replaces this with the provider's model).
+		const model = legacyEmbeddingModel(settings.embedding);
 		return {
 			embedder,
-			index: createSqliteVectorIndex(db()),
+			model,
+			index: createSqliteVectorIndex(db(), model),
 			timeoutMs: settings.embedding.timeoutMs,
 		};
 	}
@@ -134,8 +154,19 @@ export default function createRecall(
 	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
 	const pendingVectors = async () => {
 		const semanticDeps = await semantic();
-		if (semanticDeps.embedder !== undefined && semanticDeps.index !== undefined) {
-			await embedPending(db(), semanticDeps.embedder, semanticDeps.index, entry, 500);
+		if (
+			semanticDeps.embedder !== undefined &&
+			semanticDeps.index !== undefined &&
+			semanticDeps.model !== undefined
+		) {
+			await embedPending(
+				db(),
+				semanticDeps.embedder,
+				semanticDeps.index,
+				semanticDeps.model,
+				entry,
+				500,
+			);
 		}
 	};
 	const backfillDeps = () => ({

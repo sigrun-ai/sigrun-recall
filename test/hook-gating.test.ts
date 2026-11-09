@@ -16,7 +16,7 @@ describe("recall afterTool on a harness-written result", () => {
   it("error results the harness wrote are not externalized", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-gating-"));
     try {
-      const result = createRecall({
+      const result = await createRecall({
         stores: {
           paths: { data: root },
           settings: { get: async () => ({ externalizeBytes: 1 }) },
