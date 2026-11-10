@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/recall",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "Cross-conversation recall extension for sigrun (pi-durable)",
 	"type": "module",
 	"engines": {
