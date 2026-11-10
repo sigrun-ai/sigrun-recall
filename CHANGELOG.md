@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   restart (`x-sigrun-apply: "live"` on both keys).
 - **Posture change:** a malformed `localProviders` entry used to discard the
   whole list; core repairs at the smallest failing node, so only the bad entry
-  is dropped and the rest of the list keeps working.
+  is dropped and the rest of the list keeps working. The exported `UserRecallSettings` now types `localProviders` as a mutable array (type-only; it was `readonly string[]`).
 
 ### Removed
 
