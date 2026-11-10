@@ -6,6 +6,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it, vi } from "vitest";
 
 import createRecall from "../src/index.js";
+import { withDeclaredSettings } from "./fake-host.js";
 import { RecallDb } from "../src/db.js";
 
 describe("createRecall", () => {
@@ -17,7 +18,9 @@ describe("createRecall", () => {
     const root = await mkdtemp(join(tmpdir(), "recall-lifecycle-"));
 		let opened = 0;
 		const result = await createRecall(
-			{ stores: { paths: { data: root }, settings: { get: async () => ({}) } } } as never,
+			withDeclaredSettings({
+				stores: { paths: { data: root }, settings: { get: async () => ({}) } },
+			} as never),
 			{
 				openDb: (path) => {
 					opened += 1;
@@ -38,12 +41,14 @@ describe("createRecall", () => {
 
   it("factory result declares the backfill job, both tools, both hooks and both routes", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-index-"));
-    const result = await createRecall({
-      stores: {
-        paths: { data: root },
-        settings: { get: async () => ({}) },
-      },
-    } as never);
+    const result = await createRecall(
+      withDeclaredSettings({
+        stores: {
+          paths: { data: root },
+          settings: { get: async () => ({}) },
+        },
+      } as never),
+    );
     expect(result.jobs).toEqual([
       expect.objectContaining({
         name: "backfill",
@@ -73,7 +78,7 @@ describe("createRecall", () => {
         const root = await mkdtemp(join(tmpdir(), "recall-drain-"));
         let closeCount = 0;
         const result = await createRecall(
-          {
+          withDeclaredSettings({
             stores: {
               paths: { data: root },
               settings: { get: async () => ({}) },
@@ -93,7 +98,7 @@ describe("createRecall", () => {
               // Never settles: one capture stays pending forever.
               embed: () => new Promise<never>(() => {}),
             },
-          } as never,
+          } as never),
           {
             openDb: (path) => {
               const db = RecallDb.open(path);
@@ -144,13 +149,14 @@ describe("createRecall", () => {
 
   it("a transient model-list failure degrades search to lexical and a later call retries", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
-    // TWO failures: the factory reads settings once for the v4 migration
-    // label (best effort, silent), then the first search call's model list
-    // degrades and the second succeeds — one logged degradation.
-    let failures = 2;
+    // The store fails once: the factory's RAW read for the v4 migration label
+    // is best effort and silent, so the extension still loads. Then the first
+    // search call's model list degrades and the second succeeds — one logged
+    // degradation, from the registry, never from the settings read.
+    let failures = 1;
     let listFailures = 1;
     const result = await createRecall(
-      {
+      withDeclaredSettings({
         stores: {
           paths: { data: root },
           settings: {
@@ -193,7 +199,7 @@ describe("createRecall", () => {
             vectors: texts.map(() => new Float32Array([1])),
           }),
         },
-      } as never,
+      } as never),
     );
     const errors: unknown[] = [];
     const originalError = console.error;
@@ -225,7 +231,7 @@ describe("the v4 migration label comes from the factory's settings read", () => 
     const labels: (string | undefined)[] = [];
     try {
       const result = await createRecall(
-        {
+        withDeclaredSettings({
           stores: {
             paths: { data: root },
             settings: {
@@ -241,7 +247,7 @@ describe("the v4 migration label comes from the factory's settings read", () => 
           conversations: {
             meta: async () => ({ owner: "alice" }),
           },
-        } as never,
+        } as never),
         {
           openDb: (path, labelModel) => {
             labels.push(labelModel);
@@ -266,7 +272,7 @@ describe("the v4 migration label comes from the factory's settings read", () => 
     const labels: (string | undefined)[] = [];
     try {
       const result = await createRecall(
-        {
+        withDeclaredSettings({
           stores: {
             paths: { data: root },
             settings: {
@@ -277,7 +283,7 @@ describe("the v4 migration label comes from the factory's settings read", () => 
             secrets: { get: async () => undefined },
           },
           conversations: { meta: async () => ({ owner: "alice" }) },
-        } as never,
+        } as never),
         {
           openDb: (path, labelModel) => {
             labels.push(labelModel);

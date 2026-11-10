@@ -68,7 +68,7 @@ function setup(
   options: {
     item?: Partial<Omit<ItemRow, "id">>;
     meta?: SessionMeta;
-    localProviders?: readonly string[];
+    localProviders?: string[];
     now?: number;
   } = {},
 ): { db: RecallDb; searcher: Searcher; metas: Map<number, SessionMeta> } {

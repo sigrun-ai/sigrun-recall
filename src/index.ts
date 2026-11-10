@@ -14,13 +14,19 @@ import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
-import { migrationLabel, resolveSettings, resolveUserSettings } from "./config.js";
+import { migrationLabel } from "./legacy-embedding.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
 import { embeddingsMovedNotice, primaryAdmin } from "./notice.js";
 import { createSearcher } from "./search.js";
 import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
+import {
+	RECALL_SETTINGS_SCHEMA,
+	RECALL_USER_SETTINGS_SCHEMA,
+	type RecallSettings,
+	type UserRecallSettings,
+} from "./settings-schema.js";
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
 import {
@@ -62,8 +68,18 @@ export default async function createRecall(
 	host: SigrunHost,
 	deps: FactoryDeps = {},
 ): Promise<SigrunExtensionResult> {
-	// Best effort: an unreadable settings file only costs the label, so the
-	// inherited rows are re-embedded instead of being trusted.
+	// Declare first: core requires the declaration during the factory call,
+	// and the values are read on USE (never here). A factory-time read would
+	// resolve the loader's provisional, specifier-derived slug rather than the
+	// file the settings page writes.
+	const settings = host.settings.declare<RecallSettings, UserRecallSettings>({
+		schema: RECALL_SETTINGS_SCHEMA,
+		userSchema: RECALL_USER_SETTINGS_SCHEMA,
+	});
+	// Best effort, and deliberately RAW: the dead `embedding` group is not in
+	// the schema, so the declared handle cannot report it. An unreadable
+	// settings file only costs the label, so the inherited rows are
+	// re-embedded instead of being trusted.
 	let rawSettings: Record<string, unknown> | undefined;
 	try {
 		rawSettings = await host.stores.settings.get();
@@ -267,10 +283,15 @@ export default async function createRecall(
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
-	const DEFAULT_USER_SETTINGS = { autoRecall: true, localProviders: [] } as const;
-	const userSettings = async (user: string) => {
+	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true, localProviders: [] };
+	/**
+	 * The per-user settings, defaulted and repaired by the declared handle.
+	 * A read failure keeps the directory user's defaults instead of losing
+	 * recall: settings are an optimisation here, never a gate.
+	 */
+	const userSettings = async (user: string): Promise<UserRecallSettings> => {
 		try {
-			return await resolveUserSettings(host.stores.user(user).settings);
+			return await settings.user(user).get();
 		} catch {
 			return DEFAULT_USER_SETTINGS;
 		}
@@ -350,10 +371,10 @@ export default async function createRecall(
 						try {
 							const meta = await host.conversations.meta(api.conversationId);
 							if (meta.internal === true) return undefined;
-							const settings = await resolveSettings(host.stores.settings);
+							const live = await settings.get();
 							return externalize(result, call, {
 								store: artifactStore(),
-								thresholdBytes: settings.externalizeBytes,
+								thresholdBytes: live.externalizeBytes,
 								conversationId: api.conversationId,
 								owner: meta.owner ?? null,
 								now: (deps.now ?? Date.now)(),
@@ -368,7 +389,7 @@ export default async function createRecall(
 					beforeRequest: async (request, api, context) => {
 						try {
 							const liveMeta = await host.conversations.meta(api.conversationId);
-							const settings =
+							const prefs =
 								liveMeta.owner === undefined
 									? DEFAULT_USER_SETTINGS
 									: await userSettings(liveMeta.owner);
@@ -379,9 +400,9 @@ export default async function createRecall(
 								searcher: getServices().searcher,
 								meta: liveMeta,
 								model: agent?.model,
-								autoRecall: settings.autoRecall,
+								autoRecall: prefs.autoRecall,
 								internal: liveMeta.internal === true,
-								ownerLocalProviders: settings.localProviders,
+								ownerLocalProviders: prefs.localProviders,
 								sourceMeta: (id) => meta(id),
 								sourceLocalProviders: localProviders,
 							});

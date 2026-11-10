@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RecallDb } from "../src/db.js";
 import createRecall from "../src/index.js";
+import { withDeclaredSettings } from "./fake-host.js";
 
 const NOW = 1_700_000_000_000;
 const LABEL = "openai/text-embedding-3-small";
@@ -113,7 +114,7 @@ interface HostOptions {
 
 function fakeHost(options: HostOptions) {
 	const entries = options.entries ?? [];
-	return {
+	return withDeclaredSettings({
 		stores: {
 			paths: { data: options.root },
 			settings: { get: async () => options.settings ?? {} },
@@ -128,7 +129,7 @@ function fakeHost(options: HostOptions) {
 		embeddings: options.embeddings,
 		users: { list: async () => options.users ?? [] },
 		notify: options.notify ?? (async () => undefined),
-	} as never;
+	} as never);
 }
 
 interface Rig {

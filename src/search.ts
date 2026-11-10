@@ -4,7 +4,7 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 
 import type { ArtifactStore } from "./artifacts.js";
 import { audienceCovers } from "./audience.js";
-import type { UserRecallSettings } from "./config.js";
+import type { UserRecallSettings } from "./settings-schema.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
 import { passagesOf } from "./passages.js";
 import { mayRead } from "./policy.js";

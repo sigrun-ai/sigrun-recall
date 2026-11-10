@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { ToolExecutionResult, ToolHookCall } from "@earendil-works/pi-durable";
 
 import createRecall from "../src/index.js";
+import { withDeclaredSettings } from "./fake-host.js";
 
 /**
  * pi-durable 1.5.0 hook gating (spec §3.2-b): the harness runs afterTool
@@ -16,15 +17,17 @@ describe("recall afterTool on a harness-written result", () => {
   it("error results the harness wrote are not externalized", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-gating-"));
     try {
-      const result = await createRecall({
-        stores: {
-          paths: { data: root },
-          settings: { get: async () => ({ externalizeBytes: 1 }) },
-        },
-        conversations: {
-          meta: async () => ({ owner: "alice" }),
-        },
-      } as never);
+      const result = await createRecall(
+        withDeclaredSettings({
+          stores: {
+            paths: { data: root },
+            settings: { get: async () => ({ externalizeBytes: 1 }) },
+          },
+          conversations: {
+            meta: async () => ({ owner: "alice" }),
+          },
+        } as never),
+      );
       const registration = (result.extension?.hooks ?? []).find(
         (entry) => "afterTool" in entry.handlers,
       );

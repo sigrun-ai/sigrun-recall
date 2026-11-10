@@ -7,6 +7,7 @@ import type { ToolExecutionApi, ToolExecutionResult, ToolHookCall } from "@earen
 import { describe, expect, it } from "vitest";
 
 import createRecall from "../src/index.js";
+import { withDeclaredSettings } from "./fake-host.js";
 
 const NOW = 1_700_000_000_000;
 const MODEL = "acme-local/embed-1";
@@ -20,7 +21,7 @@ async function host(root: string, embedding = false) {
 			model: [{ role: "user", content: "canine knee operation", timestamp: NOW }],
 		},
 	];
-	return {
+	return withDeclaredSettings({
 		stores: {
 			paths: { data: root },
 			settings: { get: async () => ({}) },
@@ -53,7 +54,7 @@ async function host(root: string, embedding = false) {
 					}),
 				}
 			: undefined,
-	} as never;
+	} as never);
 }
 
 describe("factory integrations", () => {

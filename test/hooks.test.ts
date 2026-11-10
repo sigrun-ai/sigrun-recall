@@ -12,6 +12,7 @@ import { RecallDb, type ItemRow } from "../src/db.js";
 import { createPublishedHooks } from "../src/hooks.js";
 import createRecall, { RecallIndexInput } from "../src/index.js";
 import { createSearcher } from "../src/search.js";
+import { withDeclaredSettings } from "./fake-host.js";
 
 const NOW = Date.parse("2026-11-02T12:00:00Z");
 const DATE = "2026-10-30T09:15:00.000Z";
@@ -39,7 +40,7 @@ function meta(overrides: Partial<SessionMeta> = {}): SessionMeta {
   };
 }
 
-function setup(options: { localProviders?: readonly string[] } = {}) {
+function setup(options: { localProviders?: string[] } = {}) {
   const db = RecallDb.open(":memory:");
   databases.push(db);
   const searcher = createSearcher({
@@ -288,12 +289,14 @@ describe("published hooks", () => {
   it("the factory result publishes exactly recall.index, recall.remove, recall.search", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-hooks-"));
     roots.push(root);
-    const result = await createRecall({
-      stores: {
-        paths: { data: root },
-        settings: { get: async () => ({}) },
-      },
-    } as never);
+    const result = await createRecall(
+      withDeclaredSettings({
+        stores: {
+          paths: { data: root },
+          settings: { get: async () => ({}) },
+        },
+      } as never),
+    );
     expect(result.publishedHooks?.map((hook) => hook.name)).toEqual([
       "recall.index",
       "recall.remove",
