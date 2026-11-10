@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Declare recall's settings as JSON Schema through `host.settings.declare`, so
+  the settings page is a generated form instead of a JSON box: the shared
+  `externalizeBytes` and the per-user `autoRecall` / `localProviders`. The
+  hand-written parser (`src/config.ts`) is gone — core applies the same
+  defaults (`24576`, `true`, `[]`) and repairs a malformed stored value to
+  them, with a load-time warning and an admin notice instead of a
+  `console.warn`. Requires sigrun 0.13.0 or newer; the `@sigrun/shared` peer
+  floor rises to `0.13.0`.
+- The per-user settings are read through the declared handle at REQUEST time,
+  never in the factory body, so an edited user setting applies without a
+  restart (`x-sigrun-apply: "live"` on both keys).
+- **Posture change:** a malformed `localProviders` entry used to discard the
+  whole list; core repairs at the smallest failing node, so only the bad entry
+  is dropped and the rest of the list keeps working.
+
+### Removed
+
+- The `embedding` settings group is no longer declarable: embeddings come from
+  `host.embeddings`, and the group is read only by the 0.3.0 migration (the v4
+  vector label and the one-per-boot "embeddings moved to a provider" notice).
+  A file that still carries it loads unchanged — the key survives as a stored
+  key the schema does not declare.
+
 ## [0.3.0] - 2026-11-09
 
 ### Changed

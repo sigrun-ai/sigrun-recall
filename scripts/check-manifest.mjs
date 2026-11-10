@@ -68,17 +68,20 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * (1.3.27) — the host-linked single copy extensions see.
  * @sigrun/shared ships runtime VALUE imports (accessOf) — it rides as a
  * peer so consumers' installs resolve it, with the dev file: link to
- * core's workspace (the ext-gateway family posture). */
+ * core's workspace (the ext-gateway family posture).
+ * @sigrun/sigrun rides as a peer for the declared-settings types and the
+ * `@sigrun/sigrun/settings-schema` authoring surface the test suite proves
+ * the schema against (settings rework); development uses core's workspace
+ * through a file: dev link. */
 const HOST_MODULE_PINS = {
+	"@sigrun/sigrun": ">=0.13.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
 	typebox: "1.3.27",
-	// The accepted shared range: every line since the value imports
-	// landed (accessOf), through the live 0.11.x line and the 0.12.x line
-	// this family develops against (core 0.12.x — the release carrying
-	// host.embeddings).
-	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0",
+	// Every shared line since runtime value imports landed, through the
+	// shared version bundled by the minimum supported core.
+	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
@@ -88,7 +91,16 @@ const DEV_PIN_OVERRIDES = {
 };
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
+check(
+	peers["@sigrun/sigrun"] === HOST_MODULE_PINS["@sigrun/sigrun"],
+	`package.json: peerDependencies["@sigrun/sigrun"] must be "${HOST_MODULE_PINS["@sigrun/sigrun"]}"`,
+);
+check(
+	devDeps["@sigrun/sigrun"] === "file:../sigrun",
+	'package.json: devDependencies["@sigrun/sigrun"] must be "file:../sigrun"',
+);
 for (const [module, spec] of Object.entries(peers)) {
+	if (module === "@sigrun/sigrun") continue;
 	check(
 		module in HOST_MODULE_PINS,
 		`package.json: peerDependencies carries non-host module "${module}"`,

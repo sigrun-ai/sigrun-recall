@@ -6,11 +6,13 @@ Recall indexes conversation turns, tool calls/results, and complete large tool r
 
 ## Settings and secrets
 
-Extension settings support `externalizeBytes` (default `24576`). Per-user settings support `autoRecall` (default `true`) and `localProviders` (default `[]`).
+Recall declares its settings as JSON Schema, so the extension page is a generated form. Shared settings: `externalizeBytes` (default `24576`). Per-user settings: `autoRecall` (default `true`) and `localProviders` (default `[]`); both apply live, and one user's settings never touch another user's file.
 
 ```json
 { "externalizeBytes": 24576 }
 ```
+
+A malformed value falls back to its default, repairing only the smallest failing node — a blank `localProviders` entry is dropped rather than discarding the whole list. A settings file that still carries the pre-0.3.0 `embedding` group loads unchanged: the group is not part of the schema, so it is kept but inert.
 
 ## Embeddings
 

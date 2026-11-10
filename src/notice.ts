@@ -1,6 +1,6 @@
 import type { ExtensionNoticeInput } from "@sigrun/sigrun/extension";
 
-import { legacyEmbeddingSettings, migrationLabel } from "./config.js";
+import { legacyEmbeddingSettings, migrationLabel } from "./legacy-embedding.js";
 
 export const EMBEDDINGS_MOVED_KIND = "recall.embeddings-moved";
 export const EMBEDDINGS_MOVED_TITLE = "Recall embeddings now come from a provider";

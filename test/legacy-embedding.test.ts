@@ -1,52 +1,45 @@
-import { describe, expect, it, vi } from "vitest";
+/**
+ * The dead `embedding` settings group, read off the raw settings file for
+ * the two migration concerns only (the v4 vector label and the
+ * one-per-boot "embeddings moved to a provider" notice). The settings that
+ * DRIVE behaviour are declared in `src/settings-schema.ts` and covered by
+ * `test/settings-schema.test.ts`.
+ */
+
+import { describe, expect, it } from "vitest";
 
 import {
 	legacyEmbeddingSettings,
 	migrationLabel,
-	resolveSettings,
-	resolveUserSettings,
-	type SettingsReader,
-} from "../src/config.js";
+} from "../src/legacy-embedding.js";
 import { embeddingsMovedNotice, primaryAdmin } from "../src/notice.js";
 
-function settingsReader(values: Record<string, unknown>): SettingsReader {
-	return { get: async () => values };
-}
-
-describe("settings", () => {
-	it("resolveSettings fills defaults: externalizeBytes 24576 and nothing else", async () => {
-		expect(await resolveSettings(settingsReader({}))).toEqual({
-			externalizeBytes: 24_576,
-		});
-	});
-
-	it("the dead embedding block is not parsed into settings at all", async () => {
-		// The block survives on disk until the operator deletes it; recall
-		// must not resurrect it as behaviour.
+describe("legacy embedding settings", () => {
+	it("reads a block that names both an endpoint and a model", () => {
 		expect(
-			await resolveSettings(
-				settingsReader({
-					embedding: { url: "https://example.invalid/v1", model: "m", timeoutMs: 5 },
-				}),
-			),
-		).toEqual({ externalizeBytes: 24_576 });
+			legacyEmbeddingSettings({
+				embedding: { url: "https://example.invalid/v1", model: "m" },
+			}),
+		).toEqual({ url: "https://example.invalid/v1", model: "m" });
 	});
 
-	it('resolveUserSettings({autoRecall: "yes"}) warns once and returns autoRecall true', async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			expect(
-				await resolveUserSettings(settingsReader({ autoRecall: "yes" })),
-			).toEqual({ autoRecall: true, localProviders: [] });
-			expect(warn).toHaveBeenCalledTimes(1);
-		} finally {
-			warn.mockRestore();
-		}
+	it("ignores anything else the old parser would have rejected", () => {
+		expect(legacyEmbeddingSettings({})).toBeUndefined();
+		expect(legacyEmbeddingSettings({ embedding: null })).toBeUndefined();
+		expect(legacyEmbeddingSettings({ embedding: "https://example.invalid/v1" })).toBeUndefined();
+		expect(legacyEmbeddingSettings({ embedding: { model: "m" } })).toBeUndefined();
+		expect(legacyEmbeddingSettings({ embedding: { url: "https://example.invalid/v1" } })).toBeUndefined();
+		expect(legacyEmbeddingSettings({ embedding: { url: "", model: "m" } })).toEqual({
+			url: "",
+			model: "m",
+		});
+		// An empty model names nothing worth reporting.
+		expect(legacyEmbeddingSettings({ embedding: { url: "https://example.invalid/v1", model: "" } })).toBeUndefined();
 	});
 });
 
 describe("migration label", () => {
-	it("labels the old model only for OpenAI's own endpoint", () => {
+	it("labels the old model only for [OI]'s own endpoint", () => {
 		expect(
 			migrationLabel({
 				embedding: { url: "https://api.openai.com/v1", model: "text-embedding-3-small" },
