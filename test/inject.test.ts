@@ -61,7 +61,10 @@ function hit(
 
 function setup(
   hits: Hit[] = [hit()],
-  provider: string | undefined = "acme-local",
+  model: { provider: string; id: string } | undefined = {
+    provider: "acme-local",
+    id: "chat-1",
+  },
 ) {
   const db = RecallDb.open(":memory:");
   for (const value of hits) {
@@ -75,12 +78,11 @@ function setup(
     db,
     searcher,
     meta: meta(),
-    model: provider === undefined ? undefined : { provider },
+    model,
     autoRecall: true,
     internal: false,
-    ownerLocalProviders: ["acme-local"],
+    isLocal: (candidate) => candidate === "acme-local/chat-1",
     sourceMeta: async () => meta(),
-    sourceLocalProviders: async () => ["acme-local"],
   };
   return { db, deps, search };
 }
@@ -163,6 +165,29 @@ describe("automatic recall", () => {
     db.close();
   });
 
+  it("local-only items reach only local models", async () => {
+    const { db, deps } = setup([hit("local-only")]);
+    const result = await applyRecall([user("question")], deps);
+    expect(texts(result).at(-1)).toContain("Recalled from past conversations");
+    const remote = await applyRecall([user("question")], {
+      ...deps,
+      model: { provider: "acme-cloud", id: "chat-1" },
+    });
+    expect(remote).toBeUndefined();
+    db.close();
+  });
+
+  it("normal items reach any model", async () => {
+    const { db, deps } = setup([hit("normal")]);
+    const result = await applyRecall([user("question")], {
+      ...deps,
+      model: { provider: "acme-cloud", id: "chat-1" },
+      isLocal: () => false,
+    });
+    expect(texts(result).at(-1)).toContain("Recalled from past conversations");
+    db.close();
+  });
+
   it("a stored local-only block injected under acme-local is omitted after the conversation switches to acme-cloud, while a normal block on an earlier message stays byte-identical", async () => {
     const { db, deps, search } = setup();
     const earlier = await applyRecall([user("normal question", AT)], deps);
@@ -172,13 +197,13 @@ describe("automatic recall", () => {
       [user("normal question", AT), user("local question", AT + 1)],
       {
         ...deps,
-        model: { provider: "acme-local" },
+        model: { provider: "acme-local", id: "chat-1" },
       },
     );
     expect(texts(local).at(-1)).toContain("Recalled from past conversations");
     const switched = await applyRecall(
       [user("normal question", AT), user("local question", AT + 1)],
-      { ...deps, model: { provider: "acme-cloud" } },
+      { ...deps, model: { provider: "acme-cloud", id: "chat-1" } },
     );
     expect(texts(switched)[1]).toBe(normalBlock);
     expect(texts(switched).at(-1)).not.toContain(
@@ -199,7 +224,6 @@ describe("automatic recall", () => {
       ...deps,
       meta: current,
       sourceMeta: async () => live,
-      sourceLocalProviders: async () => ["acme-local"],
     };
     const first = await applyRecall([user("question")], sourceDeps);
     expect(texts(first).at(-1)).toContain("Recalled from past conversations");
@@ -214,7 +238,6 @@ describe("automatic recall", () => {
     const sourceDeps = {
       ...deps,
       sourceMeta: async () => live,
-      sourceLocalProviders: async () => ["acme-local"],
     };
     const first = await applyRecall([user("question")], sourceDeps);
     expect(texts(first).at(-1)).toContain("Recalled from past conversations");
@@ -364,12 +387,10 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: meta(),
-      model: { provider: "acme-local" },
+      model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
-      ownerLocalProviders: ["acme-local"],
-      sourceMeta: async () => meta(),
-      sourceLocalProviders: async () => ["acme-local"],
+      isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     const first = await applyRecall([user("question")], deps);
     expect(texts(first).at(-1)).toContain("Northside Vet research");
@@ -394,12 +415,10 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: shared,
-      model: { provider: "acme-local" },
+      model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
-      ownerLocalProviders: ["acme-local"],
-      sourceMeta: async () => meta(),
-      sourceLocalProviders: async () => ["acme-local"],
+      isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     expect(await applyRecall([user("question")], deps)).toBeUndefined();
     db.close();
@@ -414,12 +433,10 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: { ...meta(), owner: "bob" },
-      model: { provider: "acme-local" },
+      model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
-      ownerLocalProviders: ["acme-local"],
-      sourceMeta: async () => meta(),
-      sourceLocalProviders: async () => ["acme-local"],
+      isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     expect(await applyRecall([user("question")], deps)).toBeUndefined();
     db.close();
@@ -434,18 +451,16 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: meta(),
-      model: { provider: "acme-local" },
+      model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
-      ownerLocalProviders: ["acme-local"],
-      sourceMeta: async () => meta(),
-      sourceLocalProviders: async () => ["acme-local"],
+      isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     const first = await applyRecall([user("question")], base);
     expect(texts(first).at(-1)).toContain("Recalled from past conversations");
     const switched = await applyRecall([user("question")], {
       ...base,
-      model: { provider: "acme-cloud" },
+      model: { provider: "acme-cloud", id: "chat-1" },
     });
     expect(switched).toBeUndefined();
     db.close();

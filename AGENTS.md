@@ -11,7 +11,7 @@ Cross-conversation recall extension for [sigrun](https://github.com/sigrun-ai/si
 - `src/index.ts` — factory and lazy host/service wiring.
 - `src/db.ts` — schema, migrations, FTS/vector queries, and durable sweep/taint/injection state.
 - `src/settings-schema.ts` — the declared settings schemas (shared
-  `externalizeBytes`; per user `autoRecall` and `localProviders`) and their types.
+  `externalizeBytes`; per user `autoRecall`) and their types. Locality comes from the admin switch via `host.models.isLocal`.
 - `src/legacy-embedding.ts` — the dead pre-0.3.0 `embedding` group, read off the
   raw settings file for the migration label and the one-boot notice only.
 - `src/passages.ts`, `src/redact.ts`, `src/capture.ts` — bounded capture pipeline.

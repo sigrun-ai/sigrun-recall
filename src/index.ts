@@ -17,7 +17,7 @@ import { captureConversation } from "./capture.js";
 import { migrationLabel } from "./legacy-embedding.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
-import { embeddingsMovedNotice, primaryAdmin } from "./notice.js";
+import { embeddingsMovedNotice, localProvidersMovedNotice, primaryAdmin } from "./notice.js";
 import { createSearcher } from "./search.js";
 import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
@@ -37,6 +37,46 @@ import {
 	type EmbeddingHost,
 	type EmbeddingModelRow,
 } from "./vectors.js";
+
+/** Remove the retired per-user allowlist after telling its owner once. */
+async function migrateLocalProviders(host: SigrunHost): Promise<void> {
+	let users: readonly { user: string }[];
+	try {
+		users = await host.users.list();
+	} catch (error) {
+		console.warn("recall: the local-providers migration could not list users", error);
+		return;
+	}
+	for (const { user } of users) {
+		let store: ReturnType<SigrunHost["stores"]["user"]>["settings"];
+		let raw: Record<string, unknown>;
+		try {
+			store = host.stores.user(user).settings;
+			raw = await store.get();
+		} catch (error) {
+			console.warn(`recall: could not read local providers for "${user}"`, error);
+			continue;
+		}
+		if (!Array.isArray(raw.localProviders) || raw.localProviders.length === 0) {
+			continue;
+		}
+		try {
+			await host.notify({ user, ...localProvidersMovedNotice() });
+		} catch (error) {
+			// A failed delivery must not remove the evidence: retry next boot.
+			console.warn(`recall: the local-providers notice failed for "${user}"`, error);
+			continue;
+		}
+		try {
+			const { localProviders: _removed, ...remaining } = raw;
+			await store.set(remaining);
+		} catch (error) {
+			// The notice was delivered but the removal failed. The next boot
+			// may repeat that notice, but never silently drops the record.
+			console.warn(`recall: could not remove local providers for "${user}"`, error);
+		}
+	}
+}
 
 export {
 	RecallIndexInput,
@@ -59,10 +99,8 @@ export interface FactoryDeps {
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for ONE reason: the v4 vectors migration stamps the vectors it
- * inherits from the pre-model schema with the model the OLD settings named,
- * and that label must be known before the database is first opened (which
- * happens lazily, from synchronous call sites).
+ * Async for the raw migration-label read and the once-per-boot
+ * local-providers migration sweep.
  */
 export default async function createRecall(
 	host: SigrunHost,
@@ -86,7 +124,17 @@ export default async function createRecall(
 	} catch {
 		rawSettings = undefined;
 	}
+	// This migration runs ONCE per boot at factory start. The async factory
+	// awaits the bridged directory and notices; core's loader and server
+	// finish binding after the factory yields.
+	await migrateLocalProviders(host);
+
 	const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
+	const isLocal = (model: string): boolean => host.models.isLocal(model);
+	const modelRef = (
+		model: { provider: string; modelId: string } | undefined,
+	): { provider: string; id: string } | undefined =>
+		model === undefined ? undefined : { provider: model.provider, id: model.modelId };
 	let database: RecallDb | undefined;
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
@@ -283,7 +331,7 @@ export default async function createRecall(
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
-	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true, localProviders: [] };
+	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true };
 	/**
 	 * The per-user settings, defaulted and repaired by the declared handle.
 	 * A read failure keeps the directory user's defaults instead of losing
@@ -296,7 +344,6 @@ export default async function createRecall(
 			return DEFAULT_USER_SETTINGS;
 		}
 	};
-	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
 
 	/**
 	 * The background re-embed: fill the CURRENT model's index, then drop
@@ -328,7 +375,7 @@ export default async function createRecall(
 			db: db(),
 			meta,
 			entry,
-			userSettings,
+			isLocal,
 			artifactStore: artifactStore(),
 			vectors: {
 				query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
@@ -353,7 +400,7 @@ export default async function createRecall(
 						limit,
 						cursor,
 					),
-				localProviders,
+				isLocal,
 			}),
 		};
 		return services;
@@ -399,12 +446,11 @@ export default async function createRecall(
 								db: db(),
 								searcher: getServices().searcher,
 								meta: liveMeta,
-								model: agent?.model,
+								model: modelRef(agent?.model),
 								autoRecall: prefs.autoRecall,
 								internal: liveMeta.internal === true,
-								ownerLocalProviders: prefs.localProviders,
+								isLocal,
 								sourceMeta: (id) => meta(id),
-								sourceLocalProviders: localProviders,
 							});
 							return messages === undefined ? undefined : { messages };
 						} catch (error) {
@@ -423,6 +469,7 @@ export default async function createRecall(
 	};
 
 	return {
+		title: "Recall",
 		extension: defineExtension(extension),
 		publishedHooks: createPublishedHooks({
 			db,

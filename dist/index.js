@@ -6,7 +6,7 @@ import { captureConversation } from "./capture.js";
 import { migrationLabel } from "./legacy-embedding.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
-import { embeddingsMovedNotice, primaryAdmin } from "./notice.js";
+import { embeddingsMovedNotice, localProvidersMovedNotice, primaryAdmin } from "./notice.js";
 import { createSearcher } from "./search.js";
 import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
@@ -14,6 +14,49 @@ import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
+/** Remove the retired per-user allowlist after telling its owner once. */
+async function migrateLocalProviders(host) {
+    let users;
+    try {
+        users = await host.users.list();
+    }
+    catch (error) {
+        console.warn("recall: the local-providers migration could not list users", error);
+        return;
+    }
+    for (const { user } of users) {
+        let store;
+        let raw;
+        try {
+            store = host.stores.user(user).settings;
+            raw = await store.get();
+        }
+        catch (error) {
+            console.warn(`recall: could not read local providers for "${user}"`, error);
+            continue;
+        }
+        if (!Array.isArray(raw.localProviders) || raw.localProviders.length === 0) {
+            continue;
+        }
+        try {
+            await host.notify({ user, ...localProvidersMovedNotice() });
+        }
+        catch (error) {
+            // A failed delivery must not remove the evidence: retry next boot.
+            console.warn(`recall: the local-providers notice failed for "${user}"`, error);
+            continue;
+        }
+        try {
+            const { localProviders: _removed, ...remaining } = raw;
+            await store.set(remaining);
+        }
+        catch (error) {
+            // The notice was delivered but the removal failed. The next boot
+            // may repeat that notice, but never silently drops the record.
+            console.warn(`recall: could not remove local providers for "${user}"`, error);
+        }
+    }
+}
 export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOutput, RecallSearchInput, RecallSearchOutput, } from "./hooks.js";
 /** The query path's own budget: one short call, or the lexical results. */
 const QUERY_TIMEOUT_MS = 800;
@@ -21,10 +64,8 @@ const QUERY_TIMEOUT_MS = 800;
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for ONE reason: the v4 vectors migration stamps the vectors it
- * inherits from the pre-model schema with the model the OLD settings named,
- * and that label must be known before the database is first opened (which
- * happens lazily, from synchronous call sites).
+ * Async for the raw migration-label read and the once-per-boot
+ * local-providers migration sweep.
  */
 export default async function createRecall(host, deps = {}) {
     // Declare first: core requires the declaration during the factory call,
@@ -46,7 +87,13 @@ export default async function createRecall(host, deps = {}) {
     catch {
         rawSettings = undefined;
     }
+    // This migration runs ONCE per boot at factory start. The async factory
+    // awaits the bridged directory and notices; core's loader and server
+    // finish binding after the factory yields.
+    await migrateLocalProviders(host);
     const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
+    const isLocal = (model) => host.models.isLocal(model);
+    const modelRef = (model) => model === undefined ? undefined : { provider: model.provider, id: model.modelId };
     let database;
     let services;
     const pending = new Set();
@@ -220,7 +267,7 @@ export default async function createRecall(host, deps = {}) {
     const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
-    const DEFAULT_USER_SETTINGS = { autoRecall: true, localProviders: [] };
+    const DEFAULT_USER_SETTINGS = { autoRecall: true };
     /**
      * The per-user settings, defaulted and repaired by the declared handle.
      * A read failure keeps the directory user's defaults instead of losing
@@ -234,7 +281,6 @@ export default async function createRecall(host, deps = {}) {
             return DEFAULT_USER_SETTINGS;
         }
     };
-    const localProviders = async (user) => (await userSettings(user)).localProviders;
     /**
      * The background re-embed: fill the CURRENT model's index, then drop
      * every other model's rows once the current one covers every item it
@@ -267,7 +313,7 @@ export default async function createRecall(host, deps = {}) {
             db: db(),
             meta,
             entry,
-            userSettings,
+            isLocal,
             artifactStore: artifactStore(),
             vectors: {
                 query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
@@ -286,7 +332,7 @@ export default async function createRecall(host, deps = {}) {
                     minEntryId: query.minEntryId,
                     maxEntryId: query.maxEntryId,
                 }, limit, cursor),
-                localProviders,
+                isLocal,
             }),
         };
         return services;
@@ -333,12 +379,11 @@ export default async function createRecall(host, deps = {}) {
                             db: db(),
                             searcher: getServices().searcher,
                             meta: liveMeta,
-                            model: agent?.model,
+                            model: modelRef(agent?.model),
                             autoRecall: prefs.autoRecall,
                             internal: liveMeta.internal === true,
-                            ownerLocalProviders: prefs.localProviders,
+                            isLocal,
                             sourceMeta: (id) => meta(id),
-                            sourceLocalProviders: localProviders,
                         });
                         return messages === undefined ? undefined : { messages };
                     }
@@ -357,6 +402,7 @@ export default async function createRecall(host, deps = {}) {
         },
     };
     return {
+        title: "Recall",
         extension: defineExtension(extension),
         publishedHooks: createPublishedHooks({
             db,

@@ -9,13 +9,14 @@ export interface InjectDeps {
     meta: SessionMeta;
     model: {
         provider: string;
+        id: string;
     } | undefined;
     autoRecall: boolean;
     internal: boolean;
-    ownerLocalProviders: readonly string[];
-    /** Live source policy readers; missing readers fail closed for sourced blocks. */
+    /** The admin's live locality switch; unknown sources fail closed. */
+    isLocal: (model: string) => boolean;
+    /** Live source metadata; a missing reader fails closed for sourced blocks. */
     sourceMeta?: (conversationId: number) => Promise<SessionMeta>;
-    sourceLocalProviders?: (user: string) => Promise<readonly string[]>;
 }
 /** Stable identity of a user message for per-message injection reuse. */
 export declare function messageKey(message: UserMessage): string;

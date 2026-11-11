@@ -1,7 +1,7 @@
 /**
  * Recall's declared settings (settings rework): the shared
- * `externalizeBytes` key and the per-user `autoRecall` / `localProviders`
- * pair, as JSON Schema. Core generates the settings page from this file
+ * `externalizeBytes` key and the per-user `autoRecall` setting, as JSON
+ * Schema. Core generates the settings page from this file
  * and checks every save against it, so the schema is the single source of
  * the defaults and of the malformed-value repair that the deleted
  * `resolveSettings`/`resolveUserSettings` parsers performed by hand.
@@ -11,9 +11,10 @@
  * - **shared** (`settings/recall.json`) — `externalizeBytes`, the size at
  *   which a complete tool result is stored whole and replaced in model
  *   output by a head, outline and handle.
- * - **per user** — `autoRecall` and `localProviders`, which decide how one
- *   directory user's requests are augmented and which providers may see
- *   their local-only material.
+ * - **per user** — `autoRecall`, which decides whether one directory
+ *   user's requests are augmented. Locality comes from the admin's
+ *   provider switches through `host.models.isLocal`, never from a user
+ *   settings key.
  *
  * The OLD `embedding` group is deliberately NOT declared: embeddings come
  * from core's registry (`host.embeddings`), so a model, endpoint, locality
@@ -30,7 +31,6 @@ export declare const RECALL_SETTINGS_SCHEMA: Type.TObject<{
 }> & Readonly<Record<string, unknown>>;
 export declare const RECALL_USER_SETTINGS_SCHEMA: Type.TObject<{
     autoRecall: Type.TBoolean;
-    localProviders: Type.TArray<Type.TString>;
 }> & Readonly<Record<string, unknown>>;
 export type RecallSettings = Static<typeof RECALL_SETTINGS_SCHEMA>;
 export type UserRecallSettings = Static<typeof RECALL_USER_SETTINGS_SCHEMA>;

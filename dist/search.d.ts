@@ -2,7 +2,6 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { Sharing } from "@sigrun/shared/access";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { ArtifactStore } from "./artifacts.js";
-import type { UserRecallSettings } from "./settings-schema.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
 export interface SearchContext {
     current: {
@@ -12,6 +11,7 @@ export interface SearchContext {
     };
     model: {
         provider: string;
+        id: string;
     } | undefined;
     excludeConversation?: number;
     includeJobs: boolean;
@@ -41,7 +41,7 @@ export declare function createSearcher(deps: {
     db: RecallDb;
     meta(id: number): Promise<SessionMeta>;
     entry(conversationId: number, entryId: number): Promise<EntryRecord | undefined>;
-    userSettings(user: string): Promise<UserRecallSettings>;
+    isLocal(model: string): boolean;
     vectors?: VectorArm;
     artifactStore?: ArtifactStore;
     now(): number;

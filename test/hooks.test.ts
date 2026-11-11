@@ -40,17 +40,14 @@ function meta(overrides: Partial<SessionMeta> = {}): SessionMeta {
   };
 }
 
-function setup(options: { localProviders?: string[] } = {}) {
+function setup(options: { localModels?: string[] } = {}) {
   const db = RecallDb.open(":memory:");
   databases.push(db);
   const searcher = createSearcher({
     db,
     meta: async () => meta(),
     entry: async () => undefined,
-    userSettings: async () => ({
-      autoRecall: true,
-      localProviders: options.localProviders ?? [],
-    }),
+    isLocal: (model) => (options.localModels ?? []).includes(model),
     now: () => NOW,
   });
   const hooks = createPublishedHooks({
@@ -251,7 +248,7 @@ describe("published hooks", () => {
   });
 
   it("search without model returns no local-only items; with alice's local provider it does", async () => {
-    const { byName } = setup({ localProviders: ["acme-local"] });
+    const { byName } = setup({ localModels: ["acme-local/m1"] });
     await byName
       .get("recall.index")!
       .run(card({ class: "local-only" }), call());

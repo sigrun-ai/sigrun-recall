@@ -160,7 +160,7 @@ export function createPublishedHooks(deps) {
                 current,
                 model: input.model === undefined
                     ? undefined
-                    : { provider: input.model.provider },
+                    : { provider: input.model.provider, id: input.model.modelId },
                 includeJobs: true,
                 kinds: input.kinds,
             }, input.limit ?? 10);

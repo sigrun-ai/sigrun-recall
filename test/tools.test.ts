@@ -99,10 +99,7 @@ async function setup(
     db,
     meta: async (id) => metas.get(id)!,
     entry,
-    userSettings: async () => ({
-      autoRecall: true,
-      localProviders: ["acme-local"],
-    }),
+    isLocal: (model) => model === "acme-local/test-model",
     now: () => NOW,
     artifactStore,
   });
@@ -119,7 +116,7 @@ async function setup(
           (query.maxEntryId === undefined || value.id <= query.maxEntryId),
       ),
     }),
-    localProviders: async () => ["acme-local"],
+    isLocal: (model) => model === "acme-local/test-model",
   };
   const tools = createTools(deps);
   return { db, metas, entries, artifactStore, tools };

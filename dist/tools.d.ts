@@ -13,7 +13,7 @@ export interface ToolsDeps {
         maxEntryId?: number;
         order: "ascending";
     }, limit: number, cursor?: Cursor): Promise<Page<EntryRecord, Cursor>>;
-    localProviders(user: string): Promise<readonly string[]>;
+    isLocal(model: string): boolean;
 }
 /** Build the read-only model-facing recall tools. */
 export declare function createTools(deps: ToolsDeps): readonly ToolRegistration[];

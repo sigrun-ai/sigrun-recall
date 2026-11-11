@@ -4,7 +4,6 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 
 import type { ArtifactStore } from "./artifacts.js";
 import { audienceCovers } from "./audience.js";
-import type { UserRecallSettings } from "./settings-schema.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
 import { passagesOf } from "./passages.js";
 import { mayRead } from "./policy.js";
@@ -17,7 +16,7 @@ const DAY_MS = 86_400_000;
 
 export interface SearchContext {
 	current: { conversationId: number | undefined; owner?: string; sharing?: Sharing };
-	model: { provider: string } | undefined;
+	model: { provider: string; id: string } | undefined;
 	excludeConversation?: number;
 	includeJobs: boolean;
 	/** Inclusive message-time lower bound. */
@@ -47,7 +46,7 @@ export function createSearcher(deps: {
 	db: RecallDb;
 	meta(id: number): Promise<SessionMeta>;
 	entry(conversationId: number, entryId: number): Promise<EntryRecord | undefined>;
-	userSettings(user: string): Promise<UserRecallSettings>;
+	isLocal(model: string): boolean;
 	vectors?: VectorArm;
 	artifactStore?: ArtifactStore;
 	now(): number;
@@ -88,7 +87,6 @@ export function createSearcher(deps: {
 				}))
 				.sort((a, b) => b.score - a.score);
 			const metas = new Map<number, Promise<SessionMeta | undefined>>();
-			const settings = new Map<string, Promise<readonly string[]>>();
 			const entries = new Map<string, Promise<EntryRecord | undefined>>();
 			const hits: Hit[] = [];
 
@@ -133,19 +131,7 @@ export function createSearcher(deps: {
 					continue;
 				}
 
-				let localProviders: readonly string[] = [];
-				if (item.owner !== null) {
-					let settingsPromise = settings.get(item.owner);
-					if (settingsPromise === undefined) {
-						settingsPromise = deps
-							.userSettings(item.owner)
-							.then((value) => value.localProviders)
-							.catch(() => []);
-						settings.set(item.owner, settingsPromise);
-					}
-					localProviders = await settingsPromise;
-				}
-				if (!mayRead(item.cls, ctx.model, localProviders)) continue;
+				if (!mayRead(item.cls, ctx.model, deps.isLocal)) continue;
 
 				const source = await sourceText(deps, item, entries);
 				if (source === undefined) continue;

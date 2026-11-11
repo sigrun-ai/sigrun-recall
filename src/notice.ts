@@ -4,6 +4,21 @@ import { legacyEmbeddingSettings, migrationLabel } from "./legacy-embedding.js";
 
 export const EMBEDDINGS_MOVED_KIND = "recall.embeddings-moved";
 export const EMBEDDINGS_MOVED_TITLE = "Recall embeddings now come from a provider";
+export const LOCAL_PROVIDERS_MOVED_KIND = "recall.local-providers-moved";
+export const LOCAL_PROVIDERS_MOVED_TITLE = "Local providers are now set by your admin";
+
+/** The one-per-user migration notice for the removed localProviders key. */
+export function localProvidersMovedNotice(): Pick<
+	ExtensionNoticeInput,
+	"kind" | "title" | "body"
+> {
+	return {
+		kind: LOCAL_PROVIDERS_MOVED_KIND,
+		title: LOCAL_PROVIDERS_MOVED_TITLE,
+		body:
+			"Recall's per-user localProviders setting has been removed. Your admin now chooses which providers may receive local-only material; local-only items no longer reach models outside that switch. The old list has been removed from your settings file.",
+	};
+}
 
 /**
  * The primary admin: the FIRST directory entry carrying the admin flag,

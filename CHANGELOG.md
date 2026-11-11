@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Local-only material now follows the admin's per-extension locality switch
+  through `host.models.isLocal(provider/model)`. The per-user
+  `localProviders` setting and all owner/provider allowlist reads are gone;
+  normal items remain readable by every model, while local-only and unknown
+  classes require a model whose full provider/model id is local. Requires
+  sigrun 0.15.0 or newer; the `@sigrun/shared` peer range now includes
+  0.14.0 and 0.15.0.
+- At factory start, each user whose raw settings still contain a non-empty
+  `localProviders` list receives one `recall.local-providers-moved` notice,
+  then the key is removed from that user's stored settings. Removing the key
+  is the migration record, so the notice does not repeat on later boots.
+- The extension result declares the display title `Recall`.
+
 ## [0.4.0] - 2026-11-10
 
 ### Changed

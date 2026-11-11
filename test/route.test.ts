@@ -59,7 +59,7 @@ describe("routes", () => {
             { role: "user", content: "clinic", timestamp: 1_700_000_000_000 },
           ],
         }) as never,
-      userSettings: async () => ({ autoRecall: true, localProviders: [] }),
+      isLocal: () => false,
       now: () => 1_700_000_000_000,
     });
     const routes = createRoutes({

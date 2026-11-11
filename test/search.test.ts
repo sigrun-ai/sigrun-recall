@@ -57,7 +57,7 @@ function item(
 function context(overrides: Partial<SearchContext> = {}): SearchContext {
   return {
     current: { conversationId: 1, owner: "alice" },
-    model: { provider: "acme-local" },
+    model: { provider: "acme-local", id: "chat-1" },
     includeJobs: false,
     ...overrides,
   };
@@ -68,7 +68,7 @@ function setup(
   options: {
     item?: Partial<Omit<ItemRow, "id">>;
     meta?: SessionMeta;
-    localProviders?: string[];
+    localModels?: string[];
     now?: number;
   } = {},
 ): { db: RecallDb; searcher: Searcher; metas: Map<number, SessionMeta> } {
@@ -94,10 +94,8 @@ function setup(
     },
     entry: async (conversationId, entryId) =>
       entries.get(`${conversationId}:${entryId}`),
-    userSettings: async () => ({
-      autoRecall: true,
-      localProviders: options.localProviders ?? ["acme-local"],
-    }),
+    isLocal: (model) =>
+      (options.localModels ?? ["acme-local/chat-1"]).includes(model),
     now: () => options.now ?? NOW,
   });
   return { db, searcher, metas };
@@ -149,16 +147,16 @@ describe("search", () => {
     expect(await searcher.search("clinic", asBob, 10)).toEqual([]);
   });
 
-  it("a local-only item is returned only when ctx.model.provider is in the item owner's localProviders", async () => {
+  it("a local-only item is returned only when the admin marks its full model id local", async () => {
     const { searcher } = setup("local clinic", {
       item: { cls: "local-only" },
-      localProviders: ["acme-local"],
+      localModels: ["acme-local/chat-1"],
     });
     expect(await searcher.search("clinic", context(), 10)).toHaveLength(1);
     expect(
       await searcher.search(
         "clinic",
-        context({ model: { provider: "acme-cloud" } }),
+        context({ model: { provider: "acme-cloud", id: "chat-1" } }),
         10,
       ),
     ).toEqual([]);
@@ -191,9 +189,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => entry(1, 1, "clinic"),
-      userSettings: async () => {
-        throw new Error("unknown user");
-      },
+      isLocal: () => false,
       now: () => NOW,
     });
     expect(await searcher.search("clinic", context(), 10)).toHaveLength(1);
@@ -215,7 +211,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async (_conversationId, entryId) => entry(entryId, 1, "clinic"),
-      userSettings: async () => ({ autoRecall: true, localProviders: [] }),
+      isLocal: () => false,
       now: () => NOW,
     });
     const hits = await searcher.search("clinic", context(), 10);
@@ -249,10 +245,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     const hits = await searcher.search("harbourside", context(), 10);
@@ -285,10 +278,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     const sharedWithBob = context({
@@ -304,7 +294,7 @@ describe("search", () => {
     db.close();
   });
 
-  it("a local-only doc is withheld from acme-cloud and shown to acme-local when alice lists acme-local", async () => {
+  it("a local-only doc is withheld from a non-local model and shown to a local one", async () => {
     const db = RecallDb.open(":memory:");
     db.upsertDoc(
       {
@@ -325,16 +315,13 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     expect(
       await searcher.search(
         "harbourside",
-        context({ model: { provider: "acme-cloud" } }),
+        context({ model: { provider: "acme-cloud", id: "chat-1" } }),
         10,
       ),
     ).toEqual([]);

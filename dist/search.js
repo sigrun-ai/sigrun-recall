@@ -46,7 +46,6 @@ export function createSearcher(deps) {
             }))
                 .sort((a, b) => b.score - a.score);
             const metas = new Map();
-            const settings = new Map();
             const entries = new Map();
             const hits = [];
             for (const candidate of candidates) {
@@ -86,19 +85,7 @@ export function createSearcher(deps) {
                     !audienceCovers(ctx.current, meta)) {
                     continue;
                 }
-                let localProviders = [];
-                if (item.owner !== null) {
-                    let settingsPromise = settings.get(item.owner);
-                    if (settingsPromise === undefined) {
-                        settingsPromise = deps
-                            .userSettings(item.owner)
-                            .then((value) => value.localProviders)
-                            .catch(() => []);
-                        settings.set(item.owner, settingsPromise);
-                    }
-                    localProviders = await settingsPromise;
-                }
-                if (!mayRead(item.cls, ctx.model, localProviders))
+                if (!mayRead(item.cls, ctx.model, deps.isLocal))
                     continue;
                 const source = await sourceText(deps, item, entries);
                 if (source === undefined)

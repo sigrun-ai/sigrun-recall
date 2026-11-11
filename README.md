@@ -6,13 +6,13 @@ Recall indexes conversation turns, tool calls/results, and complete large tool r
 
 ## Settings and secrets
 
-Recall declares its settings as JSON Schema, so the extension page is a generated form. Shared settings: `externalizeBytes` (default `24576`). Per-user settings: `autoRecall` (default `true`) and `localProviders` (default `[]`); both apply live, and one user's settings never touch another user's file.
+Recall declares its settings as JSON Schema, so the extension page is a generated form. Shared settings: `externalizeBytes` (default `24576`). Per-user settings: `autoRecall` (default `true`) applies live, and one user's settings never touch another user's file. Locality is controlled by the admin's per-extension switch, not by user settings.
 
 ```json
 { "externalizeBytes": 24576 }
 ```
 
-A malformed value falls back to its default, repairing only the smallest failing node — a blank `localProviders` entry is dropped rather than discarding the whole list. A settings file that still carries the pre-0.3.0 `embedding` group loads unchanged: the group is not part of the schema, so it is kept but inert.
+A malformed value falls back to its default, repairing only the smallest failing node. A settings file that still carries the pre-0.3.0 `embedding` group loads unchanged: the group is not part of the schema, so it is kept but inert. At startup, a user with a stored non-empty `localProviders` list is told once that locality moved to the admin switch, and that retired key is removed from the user's settings file.
 
 ## Embeddings
 
@@ -30,7 +30,7 @@ Recall used to embed through its own `embedding` settings block and `embedding-a
 
 ## Access and confidentiality
 
-Items are `normal` or `local-only`. Local-only material reaches only models whose provider is in the item owner's `localProviders`; an absent model or unknown owner fails closed. Recall also re-checks live conversation sharing for every reader of the calling conversation: material shared later becomes visible, and revoked sharing stops matching immediately. Internal conversations are never indexed or recalled. Displaying local-only material taints subsequent capture in the calling conversation.
+Items are `normal` or `local-only`. Local-only material reaches only models whose full provider/model id is marked local by the admin switch; an absent model fails closed. Recall also re-checks live conversation sharing for every reader of the calling conversation: material shared later becomes visible, and revoked sharing stops matching immediately. Internal conversations are never indexed or recalled. Displaying local-only material taints subsequent capture in the calling conversation.
 
 Auto-recall excludes the current conversation and job runs; explicit `recall_search` can include both. Stored injection blocks are reused byte-for-byte where policy allows and are kept for the conversation's life (they are small; v1 does not prune them).
 
@@ -46,7 +46,7 @@ Recall publishes three extension-to-extension hooks (schema-validated through si
 
 - `recall.index` — input `{ id (1..256), kind (1..64), title (≤512), text, date (ISO), url?, class?: "normal" | "local-only", sources? (≤100 handles) }`; output `{ handle, class, changed }`. Stores a user-owned document and returns a `d:<id>` handle. Repeating an identical payload leaves the store untouched and returns `changed: false`. The stored class is the strictest of `class` (default `normal`) and the classes of any `sources` items that exist — documents (`d:`), passages (`r:`) and artifacts (`a:`) all resolve to their live class; unknown handles are ignored.
 - `recall.remove` — input `{ id }`; output `{ removed }`. Deletes the document and its index rows.
-- `recall.search` — input `{ query, limit? (1..50, default 10), kinds? (turn|tool|artifact|doc), model?: { provider, modelId } }`; output `{ hits: [{ handle, kind, title, date, snippet, class, provider?, id? }] }`. Doc hits carry `provider` (the storing extension's slug) and `id`. Job items are included; the calling conversation is not excluded. Without a `model`, only `normal` items surface; a `model` whose provider is in the owner's `localProviders` also sees `local-only` items. When a `conversationId` is present, access follows that conversation's live sharing; otherwise the call acts as a private conversation of the user.
+- `recall.search` — input `{ query, limit? (1..50, default 10), kinds? (turn|tool|artifact|doc), model?: { provider, modelId } }`; output `{ hits: [{ handle, kind, title, date, snippet, class, provider?, id? }] }`. Doc hits carry `provider` (the storing extension's slug) and `id`. Job items are included; the calling conversation is not excluded. Without a `model`, only `normal` items surface; a `model` marked local by the admin switch also sees `local-only` items. When a `conversationId` is present, access follows that conversation's live sharing; otherwise the call acts as a private conversation of the user.
 
 Identity: `recall.index` and `recall.remove` require a user and fail with `"recall.<name> needs a user"` when the caller has none; `recall.search` without a user returns `{ hits: [] }`. Documents are keyed `(caller extension slug, user, id)`, so one extension cannot overwrite another's records, and a doc hit's `provider` names the extension that stored it.
 
