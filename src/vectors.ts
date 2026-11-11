@@ -35,12 +35,13 @@ export interface EmbeddingHost {
 		texts: readonly string[],
 		opts?: {
 			model?: string;
+			user?: string;
 			confidentiality?: "normal" | "local-only";
 			signal?: AbortSignal;
 			timeoutMs?: number;
 		},
 	): Promise<EmbeddingResult>;
-	list(): Promise<readonly EmbeddingModelRow[]>;
+	list(opts?: { user?: string }): Promise<readonly EmbeddingModelRow[]>;
 }
 
 export interface VectorIndex {
@@ -90,6 +91,7 @@ export const DEFAULT_EMBEDDING_WARNINGS: EmbeddingWarning = createEmbeddingWarni
 export function createSqliteVectorIndex(
 	db: RecallDb,
 	model: string,
+	owner?: string | null,
 	pageSize = 2000,
 ): VectorIndex {
 	return {
@@ -102,7 +104,7 @@ export function createSqliteVectorIndex(
 			let after = 0;
 			for (let page = 0; page < 50; page += 1) {
 				if (signal?.aborted === true) break;
-				const rows = db.listVectorsPage(model, after, pageSize);
+				const rows = db.listVectorsPage(model, after, pageSize, owner);
 				for (const row of rows) {
 					const score = cosine(vec, row.vec);
 					best.push({ itemId: row.itemId, score });
@@ -151,12 +153,18 @@ export async function embedClass(
 	confidentiality: "normal" | "local-only",
 	model: string | undefined,
 	warn: EmbeddingWarning,
+	user?: string,
 ): Promise<void> {
 	if (batch.length === 0) return;
-	const opts: { confidentiality: "normal" | "local-only"; model?: string } = {
+	const opts: {
+		confidentiality: "normal" | "local-only";
+		model?: string;
+		user?: string;
+	} = {
 		confidentiality,
 	};
 	if (model !== undefined) opts.model = model;
+	if (user !== undefined) opts.user = user;
 	const result = await embeddings.embed(
 		batch.map(({ text }) => text),
 		opts,
@@ -185,10 +193,11 @@ export async function embedPending(
 	entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>,
 	limit = 500,
 	warn: EmbeddingWarning = DEFAULT_EMBEDDING_WARNINGS,
+	owner?: string | null,
 ): Promise<void> {
 	const normal: { id: number; text: string }[] = [];
 	const local: { id: number; text: string }[] = [];
-	for (const item of db.listUnembeddedItems(model, limit, modelIsLocal)) {
+	for (const item of db.listUnembeddedItems(model, limit, modelIsLocal, 0, owner)) {
 		const target = item.cls === "local-only" ? local : normal;
 		if (item.kind === "doc") {
 			if (item.doc === null) continue;
@@ -223,7 +232,15 @@ export async function embedPending(
 		[local, "local-only"],
 	] as const) {
 		try {
-			await embedClass(embeddings, upsert, batch, confidentiality, model, warn);
+			await embedClass(
+				embeddings,
+				upsert,
+				batch,
+				confidentiality,
+				model,
+				warn,
+				owner ?? undefined,
+			);
 		} catch (error) {
 			warn(
 				"failed",
@@ -245,6 +262,7 @@ export function createVectorArm(
 	model: string,
 	timeoutMs: number,
 	warn: EmbeddingWarning = DEFAULT_EMBEDDING_WARNINGS,
+	user?: string,
 ): VectorArm {
 	return {
 		async query(text, candidateLimit) {
@@ -252,6 +270,7 @@ export function createVectorArm(
 			try {
 				const result = await embeddings.embed([text], {
 					model,
+					...(user === undefined ? {} : { user }),
 					timeoutMs,
 					signal,
 				});

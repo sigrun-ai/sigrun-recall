@@ -4,6 +4,8 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { ArtifactStore } from "./artifacts.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
 export interface SearchContext {
+    /** Acting directory user; undefined selects the system embedding default. */
+    user?: string;
     current: {
         conversationId: number | undefined;
         owner?: string;
@@ -42,7 +44,7 @@ export declare function createSearcher(deps: {
     meta(id: number): Promise<SessionMeta>;
     entry(conversationId: number, entryId: number): Promise<EntryRecord | undefined>;
     isLocal(model: string): boolean;
-    vectors?: VectorArm;
+    vectors?: (user: string | undefined) => Promise<VectorArm | undefined>;
     artifactStore?: ArtifactStore;
     now(): number;
 }): Searcher;

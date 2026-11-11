@@ -89,6 +89,7 @@ export async function applyRecall(
 			const hits = await deps.searcher.search(
 				`${textOf(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
 				{
+					user: deps.meta.owner,
 					current: {
 						conversationId: deps.conversationId,
 						owner: deps.meta.owner,

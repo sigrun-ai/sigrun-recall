@@ -149,6 +149,7 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 			const hits = await deps.searcher.search(
 				args.query,
 				{
+					user: current.owner,
 					current: {
 						conversationId,
 						owner: current.owner,

@@ -36,8 +36,9 @@ export function createSearcher(deps) {
             if (trigramQuery !== "")
                 fuse(deps.db.searchTrigram(trigramQuery, ARM_LIMIT));
             if (deps.vectors !== undefined) {
-                const vectors = await deps.vectors.query(query, ARM_LIMIT);
-                fuse(vectors.map(({ itemId }) => ({ id: itemId })));
+                const vectors = await deps.vectors(ctx.user);
+                const matches = vectors === undefined ? [] : await vectors.query(query, ARM_LIMIT);
+                fuse(matches.map(({ itemId }) => ({ id: itemId })));
             }
             const candidates = [...ranks.values()]
                 .map((candidate) => ({

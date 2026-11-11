@@ -514,20 +514,39 @@ export class RecallDb {
 				 ON CONFLICT(itemId, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec`)
             .run(itemId, model, vec.length, bytes);
     }
-    listVectorsPage(model, after, limit) {
-        // SAFETY: the vectors schema stores integer item ids and Float32 BLOB bytes.
-        return this.db
-            .prepare(`SELECT itemId, vec FROM vectors WHERE model = ? AND itemId > ?
-				 ORDER BY itemId LIMIT ?`)
-            .all(model, after, limit);
+    itemOwners() {
+        const rows = this.db
+            .prepare("SELECT DISTINCT owner FROM items ORDER BY owner")
+            .all();
+        return rows.map(({ owner }) => owner);
+    }
+    listVectorsPage(model, after, limit, owner) {
+        const scoped = owner !== undefined;
+        const rows = this.db
+            .prepare(`SELECT vectors.itemId, vectors.vec FROM vectors
+				 JOIN items ON items.id = vectors.itemId
+				 WHERE vectors.model = ? AND vectors.itemId > ?
+				 AND (? OR items.owner IS ?)
+				 ORDER BY vectors.itemId LIMIT ?`)
+            .all(model, after, scoped ? 0 : 1, scoped ? owner : null, limit);
+        // SAFETY: the vectors/items schemas store integer ids and Float32 BLOB bytes.
+        // The optional owner keeps whole-model inspection available; semantic
+        // query indexes always supply it, including NULL.
+        return rows;
     }
     /**
-     * Drop every vector that is not the given model's — the switch's cleanup:
-     * only called once the new model covers every item, so the old index is
-     * never lost item by item.
+     * Drop one owner's vectors that are not the given model's — the switch's
+     * cleanup: only called once the new model covers that owner's items.
      */
-    deleteVectorsExcept(model) {
-        this.db.prepare("DELETE FROM vectors WHERE model != ?").run(model);
+    deleteVectorsExcept(model, owner) {
+        if (owner === undefined) {
+            this.db.prepare("DELETE FROM vectors WHERE model != ?").run(model);
+            return;
+        }
+        this.db
+            .prepare(`DELETE FROM vectors WHERE model != ? AND itemId IN (
+				 SELECT id FROM items WHERE owner IS ?)`)
+            .run(model, owner);
     }
     state(key) {
         const row = this.db.prepare("SELECT value FROM state WHERE key = ?").get(key);
@@ -544,17 +563,22 @@ export class RecallDb {
      * filtered out by `includeLocalOnly`, not treated as pending. `after`
      * pages by item id for {@link modelCoverage}'s bounded scan.
      */
-    listUnembeddedItems(model, limit, includeLocalOnly, after = 0) {
-        // SAFETY: the LEFT JOIN projects the typed items schema only.
+    listUnembeddedItems(model, limit, includeLocalOnly, after = 0, owner) {
+        const scoped = owner !== undefined;
         const rows = this.db
             .prepare(`SELECT items.* FROM items
 				 LEFT JOIN vectors ON vectors.itemId = items.id AND vectors.model = ?
 				 WHERE vectors.itemId IS NULL AND items.id > ?
 				 AND items.kind IN ('turn', 'tool', 'doc')
 				 AND (items.kind = 'doc' OR (items.entryId IS NOT NULL AND items.messageIndex IS NOT NULL))
-				 AND (? OR items.cls != 'local-only') ORDER BY items.id LIMIT ?`)
-            .all(model, after, includeLocalOnly ? 1 : 0, limit);
-        return rows.map((row) => ({ ...row, job: row.job === 1 }));
+				 AND (? OR items.cls != 'local-only')
+				 AND (? OR items.owner IS ?) ORDER BY items.id LIMIT ?`)
+            .all(model, after, includeLocalOnly ? 1 : 0, scoped ? 0 : 1, scoped ? owner : null, limit);
+        // SAFETY: the LEFT JOIN projects the typed items schema only.
+        return rows.map((row) => ({
+            ...row,
+            job: row.job === 1,
+        }));
     }
     /**
      * Whether the sweep could embed this item at all: a document item whose
@@ -590,12 +614,12 @@ export class RecallDb {
      * moment ONE embeddable item lacks a vector, and gives up (also `false`)
      * rather than guess when the dangling backlog exceeds its bounded scan.
      */
-    modelCoverage(model, includeLocalOnly) {
+    modelCoverage(model, includeLocalOnly, owner) {
         const PAGE = 200;
         const MAX_PAGES = 25;
         let after = 0;
         for (let page = 0; page < MAX_PAGES; page += 1) {
-            const rows = this.listUnembeddedItems(model, PAGE, includeLocalOnly, after);
+            const rows = this.listUnembeddedItems(model, PAGE, includeLocalOnly, after, owner);
             for (const item of rows) {
                 if (this.embeddable(item))
                     return { complete: false };

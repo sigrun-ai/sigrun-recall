@@ -210,6 +210,7 @@ export function createPublishedHooks(
 			const hits = await deps.searcher().search(
 				input.query,
 				{
+					user: call.user,
 					current,
 					model:
 						input.model === undefined

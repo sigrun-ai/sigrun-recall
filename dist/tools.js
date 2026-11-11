@@ -107,6 +107,7 @@ export function createTools(deps) {
                         ? ["doc"]
                         : undefined;
             const hits = await deps.searcher.search(args.query, {
+                user: current.owner,
                 current: {
                     conversationId,
                     owner: current.owner,

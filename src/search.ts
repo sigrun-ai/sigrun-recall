@@ -15,6 +15,8 @@ const RRF_K = 60;
 const DAY_MS = 86_400_000;
 
 export interface SearchContext {
+	/** Acting directory user; undefined selects the system embedding default. */
+	user?: string;
 	current: { conversationId: number | undefined; owner?: string; sharing?: Sharing };
 	model: { provider: string; id: string } | undefined;
 	excludeConversation?: number;
@@ -47,7 +49,7 @@ export function createSearcher(deps: {
 	meta(id: number): Promise<SessionMeta>;
 	entry(conversationId: number, entryId: number): Promise<EntryRecord | undefined>;
 	isLocal(model: string): boolean;
-	vectors?: VectorArm;
+	vectors?: (user: string | undefined) => Promise<VectorArm | undefined>;
 	artifactStore?: ArtifactStore;
 	now(): number;
 }): Searcher {
@@ -76,8 +78,10 @@ export function createSearcher(deps: {
 			if (porterQuery !== "") fuse(deps.db.searchPorter(porterQuery, ARM_LIMIT));
 			if (trigramQuery !== "") fuse(deps.db.searchTrigram(trigramQuery, ARM_LIMIT));
 			if (deps.vectors !== undefined) {
-				const vectors = await deps.vectors.query(query, ARM_LIMIT);
-				fuse(vectors.map(({ itemId }) => ({ id: itemId })));
+				const vectors = await deps.vectors(ctx.user);
+				const matches =
+					vectors === undefined ? [] : await vectors.query(query, ARM_LIMIT);
+				fuse(matches.map(({ itemId }) => ({ id: itemId })));
 			}
 
 			const candidates = [...ranks.values()]

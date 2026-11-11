@@ -105,7 +105,7 @@ export default async function createRecall(host, deps = {}) {
      * and the sweep is what finishes a switch anyway.
      */
     let vectorGeneration = 0;
-    let searchModelCache;
+    const searchModelCaches = new Map();
     let noticeRaised = false;
     let noticeAttempting = false;
     let localProvidersSweepAttempting = false;
@@ -224,7 +224,7 @@ export default async function createRecall(host, deps = {}) {
      * Every row is a candidate on its own coverage; the current default is
      * only the fallback for when NO row covers everything.
      */
-    function pickSemantic(rows) {
+    function pickSemantic(rows, owner) {
         if (embeddings === undefined)
             return undefined;
         const current = rows.find((row) => row.default === true);
@@ -234,11 +234,13 @@ export default async function createRecall(host, deps = {}) {
             vectorGeneration,
             rows.map((row) => [row.model, row.local, row.default === true]),
         ]);
-        if (searchModelCache?.signature === signature) {
+        const cacheKey = owner ?? "";
+        const cachedEntry = searchModelCaches.get(cacheKey);
+        if (cachedEntry?.signature === signature) {
             // SAFETY: the cache signature covers every row's model, locality
             // and default flag, so a cached model is still present and still
-            // describes the same coverage question.
-            const cached = rows.find((row) => row.model === searchModelCache.model);
+            // describes the same coverage question for this owner.
+            const cached = rows.find((row) => row.model === cachedEntry.model);
             if (cached !== undefined) {
                 return { embeddings, current, search: cached };
             }
@@ -249,21 +251,21 @@ export default async function createRecall(host, deps = {}) {
         let search = current;
         for (let index = rows.length - 1; index >= 0; index -= 1) {
             const row = rows[index];
-            if (db().modelCoverage(row.model, row.local).complete) {
+            if (db().modelCoverage(row.model, row.local, owner).complete) {
                 search = row;
                 break;
             }
         }
-        searchModelCache = { signature, model: search.model };
+        searchModelCaches.set(cacheKey, { signature, model: search.model });
         return { embeddings, current, search };
     }
-    async function semantic() {
+    async function semantic(user) {
         maybeMigrateLocalProviders();
         if (embeddings === undefined)
             return undefined;
         maybeNoteEmbeddingsMoved();
         try {
-            return pickSemantic(await embeddings.list());
+            return pickSemantic(await embeddings.list(user === undefined ? undefined : { user }), user ?? null);
         }
         catch (error) {
             // The registry can transiently fail to answer; degrade to lexical
@@ -272,11 +274,11 @@ export default async function createRecall(host, deps = {}) {
             return undefined;
         }
     }
-    async function vectors() {
-        const semanticDeps = await semantic();
+    async function vectors(user) {
+        const semanticDeps = await semantic(user);
         if (semanticDeps === undefined)
             return undefined;
-        return createVectorArm(semanticDeps.embeddings, createSqliteVectorIndex(db(), semanticDeps.search.model), semanticDeps.search.model, QUERY_TIMEOUT_MS, warnEmbedding);
+        return createVectorArm(semanticDeps.embeddings, createSqliteVectorIndex(db(), semanticDeps.search.model, user ?? null), semanticDeps.search.model, QUERY_TIMEOUT_MS, warnEmbedding, user);
     }
     let artifacts;
     const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
@@ -297,21 +299,25 @@ export default async function createRecall(host, deps = {}) {
         }
     };
     /**
-     * The background re-embed: fill the CURRENT model's index, then drop
-     * every other model's rows once the current one covers every item it
-     * can embed. Doubled storage exists only during a switch, and the old
-     * index is never lost item by item.
+     * The background re-embed, one owner at a time: fill each CURRENT model's
+     * index, then drop that owner's other-model rows once covered. Doubled
+     * storage exists only during a switch, and an incomplete owner never
+     * loses their old index or another owner's rows.
      */
     const pendingVectors = async () => {
-        const semanticDeps = await semantic();
-        if (semanticDeps === undefined)
-            return;
-        const { embeddings: surface, current } = semanticDeps;
-        await embedPending(db(), surface, current.model, current.local, entry, 500, warnEmbedding);
-        vectorGeneration += 1;
-        if (db().modelCoverage(current.model, current.local).complete) {
-            db().deleteVectorsExcept(current.model);
+        // Keep the existing backfill vectors trigger, but resolve one owner at
+        // a time. NULL is the system scope and must never reuse a user's rows.
+        for (const owner of db().itemOwners()) {
+            const semanticDeps = await semantic(owner ?? undefined);
+            if (semanticDeps === undefined)
+                continue;
+            const { embeddings: surface, current } = semanticDeps;
+            await embedPending(db(), surface, current.model, current.local, entry, 500, warnEmbedding, owner);
             vectorGeneration += 1;
+            if (db().modelCoverage(current.model, current.local, owner).complete) {
+                db().deleteVectorsExcept(current.model, owner);
+                vectorGeneration += 1;
+            }
         }
     };
     const backfillDeps = () => ({
@@ -331,9 +337,7 @@ export default async function createRecall(host, deps = {}) {
             entry,
             isLocal,
             artifactStore: artifactStore(),
-            vectors: {
-                query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
-            },
+            vectors,
             now: deps.now ?? Date.now,
         });
         services = {

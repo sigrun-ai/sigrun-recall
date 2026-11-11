@@ -221,7 +221,7 @@ describe("vectors", () => {
       meta: async () => meta(),
       entry: async () => record,
       isLocal: () => false,
-      vectors: createVectorArm(embeddings, index, MODEL, 800),
+      vectors: async () => createVectorArm(embeddings, index, MODEL, 800),
       now: () => 1_700_000_000_000,
     });
     const hits = await searcher.search("dog surgery", context(), 10);

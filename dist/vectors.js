@@ -30,7 +30,7 @@ export function createEmbeddingWarnings(now = Date.now, windowMs = 60_000) {
  */
 export const DEFAULT_EMBEDDING_WARNINGS = createEmbeddingWarnings();
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
-export function createSqliteVectorIndex(db, model, pageSize = 2000) {
+export function createSqliteVectorIndex(db, model, owner, pageSize = 2000) {
     return {
         upsert(itemId, vec) {
             db.upsertVector(itemId, model, vec);
@@ -43,7 +43,7 @@ export function createSqliteVectorIndex(db, model, pageSize = 2000) {
             for (let page = 0; page < 50; page += 1) {
                 if (signal?.aborted === true)
                     break;
-                const rows = db.listVectorsPage(model, after, pageSize);
+                const rows = db.listVectorsPage(model, after, pageSize, owner);
                 for (const row of rows) {
                     const score = cosine(vec, row.vec);
                     best.push({ itemId: row.itemId, score });
@@ -85,7 +85,7 @@ function cosine(left, right) {
  * than leaking, which is the documented outcome. Vectors are stored under the
  * model the provider RETURNED, never a recall-side guess.
  */
-export async function embedClass(embeddings, upsert, batch, confidentiality, model, warn) {
+export async function embedClass(embeddings, upsert, batch, confidentiality, model, warn, user) {
     if (batch.length === 0)
         return;
     const opts = {
@@ -93,6 +93,8 @@ export async function embedClass(embeddings, upsert, batch, confidentiality, mod
     };
     if (model !== undefined)
         opts.model = model;
+    if (user !== undefined)
+        opts.user = user;
     const result = await embeddings.embed(batch.map(({ text }) => text), opts);
     if (!result.ok) {
         warn(result.code, result.message);
@@ -110,10 +112,10 @@ export async function embedClass(embeddings, upsert, batch, confidentiality, mod
  * for local material) and are submitted with `confidentiality:
  * "local-only"`; the rest go as `normal`.
  */
-export async function embedPending(db, embeddings, model, modelIsLocal, entry, limit = 500, warn = DEFAULT_EMBEDDING_WARNINGS) {
+export async function embedPending(db, embeddings, model, modelIsLocal, entry, limit = 500, warn = DEFAULT_EMBEDDING_WARNINGS, owner) {
     const normal = [];
     const local = [];
-    for (const item of db.listUnembeddedItems(model, limit, modelIsLocal)) {
+    for (const item of db.listUnembeddedItems(model, limit, modelIsLocal, 0, owner)) {
         const target = item.cls === "local-only" ? local : normal;
         if (item.kind === "doc") {
             if (item.doc === null)
@@ -146,7 +148,7 @@ export async function embedPending(db, embeddings, model, modelIsLocal, entry, l
         [local, "local-only"],
     ]) {
         try {
-            await embedClass(embeddings, upsert, batch, confidentiality, model, warn);
+            await embedClass(embeddings, upsert, batch, confidentiality, model, warn, owner ?? undefined);
         }
         catch (error) {
             warn("failed", `pending passage embedding failed: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -159,13 +161,14 @@ export async function embedPending(db, embeddings, model, modelIsLocal, entry, l
  * different model would compare vectors from two spaces. Failures
  * degrade to lexical search (the vector arm simply contributes nothing).
  */
-export function createVectorArm(embeddings, index, model, timeoutMs, warn = DEFAULT_EMBEDDING_WARNINGS) {
+export function createVectorArm(embeddings, index, model, timeoutMs, warn = DEFAULT_EMBEDDING_WARNINGS, user) {
     return {
         async query(text, candidateLimit) {
             const signal = AbortSignal.timeout(timeoutMs);
             try {
                 const result = await embeddings.embed([text], {
                     model,
+                    ...(user === undefined ? {} : { user }),
                     timeoutMs,
                     signal,
                 });

@@ -28,11 +28,14 @@ export interface EmbeddingModelRow {
 export interface EmbeddingHost {
     embed(texts: readonly string[], opts?: {
         model?: string;
+        user?: string;
         confidentiality?: "normal" | "local-only";
         signal?: AbortSignal;
         timeoutMs?: number;
     }): Promise<EmbeddingResult>;
-    list(): Promise<readonly EmbeddingModelRow[]>;
+    list(opts?: {
+        user?: string;
+    }): Promise<readonly EmbeddingModelRow[]>;
 }
 export interface VectorIndex {
     upsert(itemId: number, vec: Float32Array): void;
@@ -60,7 +63,7 @@ export declare function createEmbeddingWarnings(now?: () => number, windowMs?: n
  */
 export declare const DEFAULT_EMBEDDING_WARNINGS: EmbeddingWarning;
 /** Store vectors in SQLite and scan bounded pages for cosine nearest neighbours. */
-export declare function createSqliteVectorIndex(db: RecallDb, model: string, pageSize?: number): VectorIndex;
+export declare function createSqliteVectorIndex(db: RecallDb, model: string, owner?: string | null, pageSize?: number): VectorIndex;
 /**
  * One embedding call for one confidentiality class. `host.embeddings.embed`
  * never throws and splits above the provider's batch size itself, so a page
@@ -74,18 +77,18 @@ export declare function createSqliteVectorIndex(db: RecallDb, model: string, pag
 export declare function embedClass(embeddings: EmbeddingHost, upsert: (itemId: number, model: string, vec: Float32Array) => void, batch: readonly {
     id: number;
     text: string;
-}[], confidentiality: "normal" | "local-only", model: string | undefined, warn: EmbeddingWarning): Promise<void>;
+}[], confidentiality: "normal" | "local-only", model: string | undefined, warn: EmbeddingWarning, user?: string): Promise<void>;
 /**
  * Embed up to `limit` unembedded conversation passages from their source
  * entries. Local-only items ride `includeLocalOnly` (a model core trusts
  * for local material) and are submitted with `confidentiality:
  * "local-only"`; the rest go as `normal`.
  */
-export declare function embedPending(db: RecallDb, embeddings: EmbeddingHost, model: string, modelIsLocal: boolean, entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>, limit?: number, warn?: EmbeddingWarning): Promise<void>;
+export declare function embedPending(db: RecallDb, embeddings: EmbeddingHost, model: string, modelIsLocal: boolean, entry: (conversationId: number, entryId: number) => Promise<EntryRecord | undefined>, limit?: number, warn?: EmbeddingWarning, owner?: string | null): Promise<void>;
 /**
  * Add a semantic arm over `model`'s index. The QUERY is embedded with
  * that same model — the index is model-scoped, so a query embedded by a
  * different model would compare vectors from two spaces. Failures
  * degrade to lexical search (the vector arm simply contributes nothing).
  */
-export declare function createVectorArm(embeddings: EmbeddingHost, index: VectorIndex, model: string, timeoutMs: number, warn?: EmbeddingWarning): VectorArm;
+export declare function createVectorArm(embeddings: EmbeddingHost, index: VectorIndex, model: string, timeoutMs: number, warn?: EmbeddingWarning, user?: string): VectorArm;

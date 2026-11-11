@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Embedding models are now resolved per owner. The existing backfill vectors
+  step enumerates item owners, embeds each owner's pending items with their
+  effective model (and ownerless items with the system default), and prunes
+  old-model vectors only after that owner's coverage is complete. Failed
+  embedding calls leave every existing vector intact.
+- Semantic search embeds with the caller's effective model and scans only
+  that caller's vectors; users without an override share the system model.
+  Coverage/model selection is cached per user, so concurrent searches and
+  one user's model switch cannot cross-contaminate another user's results.
 - Local-only material now follows the admin's per-extension locality switch
   through `host.models.isLocal(provider/model)`. The per-user
   `localProviders` setting and all owner/provider allowlist reads are gone;

@@ -62,6 +62,7 @@ export async function applyRecall(messages, deps) {
         const key = messageKey(newest);
         if (!stored.has(key) && deps.autoRecall) {
             const hits = await deps.searcher.search(`${textOf(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`, {
+                user: deps.meta.owner,
                 current: {
                     conversationId: deps.conversationId,
                     owner: deps.meta.owner,
