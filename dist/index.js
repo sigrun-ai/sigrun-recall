@@ -35,7 +35,11 @@ async function migrateLocalProviders(host) {
             console.warn(`recall: could not read local providers for "${user}"`, error);
             continue;
         }
-        if (!Array.isArray(raw.localProviders) || raw.localProviders.length === 0) {
+        if (raw.localProviders === undefined ||
+            raw.localProviders === null ||
+            raw.localProviders === "" ||
+            raw.localProviders === false ||
+            (Array.isArray(raw.localProviders) && raw.localProviders.length === 0)) {
             continue;
         }
         try {
@@ -64,8 +68,7 @@ const QUERY_TIMEOUT_MS = 800;
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for the raw migration-label read and the once-per-boot
- * local-providers migration sweep.
+ * Async for the raw migration-label read only.
  */
 export default async function createRecall(host, deps = {}) {
     // Declare first: core requires the declaration during the factory call,
@@ -87,10 +90,6 @@ export default async function createRecall(host, deps = {}) {
     catch {
         rawSettings = undefined;
     }
-    // This migration runs ONCE per boot at factory start. The async factory
-    // awaits the bridged directory and notices; core's loader and server
-    // finish binding after the factory yields.
-    await migrateLocalProviders(host);
     const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
     const isLocal = (model) => host.models.isLocal(model);
     const modelRef = (model) => model === undefined ? undefined : { provider: model.provider, id: model.modelId };
@@ -109,6 +108,8 @@ export default async function createRecall(host, deps = {}) {
     let searchModelCache;
     let noticeRaised = false;
     let noticeAttempting = false;
+    let localProvidersSweepAttempting = false;
+    let localProvidersSweepRaised = false;
     const warnEmbedding = createEmbeddingWarnings();
     const embeddings = host.embeddings;
     const trackEmbedding = (work) => {
@@ -186,6 +187,19 @@ export default async function createRecall(host, deps = {}) {
         })();
     }
     maybeNoteEmbeddingsMoved();
+    function maybeMigrateLocalProviders() {
+        if (localProvidersSweepRaised || localProvidersSweepAttempting)
+            return;
+        localProvidersSweepAttempting = true;
+        void migrateLocalProviders(host)
+            .then(() => {
+            localProvidersSweepRaised = true;
+        })
+            .finally(() => {
+            localProvidersSweepAttempting = false;
+        });
+    }
+    maybeMigrateLocalProviders();
     /**
      * The two models recall distinguishes:
      *
@@ -244,6 +258,7 @@ export default async function createRecall(host, deps = {}) {
         return { embeddings, current, search };
     }
     async function semantic() {
+        maybeMigrateLocalProviders();
         if (embeddings === undefined)
             return undefined;
         maybeNoteEmbeddingsMoved();
@@ -307,6 +322,7 @@ export default async function createRecall(host, deps = {}) {
         now: deps.now ?? Date.now,
     });
     function getServices() {
+        maybeMigrateLocalProviders();
         if (services !== undefined)
             return services;
         const searcher = createSearcher({
@@ -419,7 +435,10 @@ export default async function createRecall(host, deps = {}) {
         ],
         routes: createRoutes({
             searcher: {
-                search: (query, context, limit) => getServices().searcher.search(query, context, limit),
+                search: (query, context, limit) => {
+                    maybeMigrateLocalProviders();
+                    return getServices().searcher.search(query, context, limit);
+                },
             },
             sweep: () => runSweep(backfillDeps()),
         }),

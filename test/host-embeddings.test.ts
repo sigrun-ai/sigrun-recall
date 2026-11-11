@@ -624,4 +624,88 @@ describe("host.embeddings in recall", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+	it("the local-providers sweep waits for the bridge and never blocks the factory", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-local-sweep-"));
+		const stored = new Map<string, Record<string, unknown>>([
+			["alice", { autoRecall: false, localProviders: ["acme-local"] }],
+			["bob", { autoRecall: true, localProviders: "acme-legacy" }],
+			["carol", { autoRecall: true, localProviders: null }],
+			["dave", { autoRecall: true, localProviders: { provider: "acme-legacy" } }],
+		]);
+		let bound = false;
+		const listAttempts: boolean[] = [];
+		const notified: unknown[] = [];
+		let releaseUsers: (() => void) | undefined;
+		const usersReady = new Promise<void>((resolve) => {
+			releaseUsers = resolve;
+		});
+		try {
+			const { surface } = embeddings({ rows: [] });
+			const result = await Promise.race([
+				createRecall(
+					withDeclaredSettings({
+					stores: {
+						paths: { data: root },
+						settings: { get: async () => ({}) },
+						user: (user: string) => ({
+							settings: {
+								get: async () => structuredClone(stored.get(user) ?? {}),
+								set: async (value: Record<string, unknown>) => {
+									stored.set(user, structuredClone(value));
+								},
+							},
+						}),
+					},
+					conversations: { meta: async () => META },
+					embeddings: surface,
+					users: {
+						list: async () => {
+							await usersReady;
+							listAttempts.push(bound);
+							if (!bound) throw new Error("users bridge is not bound");
+							return [...stored.keys()].map((user) => ({ user, admin: true }));
+						},
+					},
+					notify: async (input: unknown) => {
+						await usersReady;
+						if (!bound) throw new Error("notify bridge is not bound");
+						notified.push(input);
+					},
+					} as never),
+				),
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("factory blocked before bind")), 100),
+				),
+			]);
+			// Factory resolution is the pre-bind boundary: no bridged member
+			// has run, and the stored migration keys remain untouched.
+			expect(notified).toEqual([]);
+			expect(stored.get("alice")?.localProviders).toEqual(["acme-local"]);
+			expect(stored.get("bob")?.localProviders).toBe("acme-legacy");
+			expect(stored.get("carol")?.localProviders).toBeNull();
+			expect(stored.get("dave")?.localProviders).toEqual({ provider: "acme-legacy" });
+
+			bound = true;
+			releaseUsers?.();
+			const route = result.routes!.find((entry) => entry.path === "search")!;
+			for (let attempt = 0; attempt < 2; attempt += 1) {
+				const response = await route.handler(
+					new Request("https://example.invalid/search?q=clinic"),
+					{ principal: { user: "alice", admin: false } } as never,
+				);
+				expect(response.status).toBe(200);
+			}
+			await vi.waitFor(() => expect(notified).toHaveLength(3));
+			expect(listAttempts).toContain(true);
+			expect(stored.get("carol")?.localProviders).toBeNull();
+			for (const [user, value] of stored) {
+				if (user === "carol") continue;
+				expect(value).not.toHaveProperty("localProviders");
+			}
+			await result.harnessShutdown?.({} as never, {} as never);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 });

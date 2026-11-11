@@ -57,7 +57,13 @@ async function migrateLocalProviders(host: SigrunHost): Promise<void> {
 			console.warn(`recall: could not read local providers for "${user}"`, error);
 			continue;
 		}
-		if (!Array.isArray(raw.localProviders) || raw.localProviders.length === 0) {
+		if (
+			raw.localProviders === undefined ||
+			raw.localProviders === null ||
+			raw.localProviders === "" ||
+			raw.localProviders === false ||
+			(Array.isArray(raw.localProviders) && raw.localProviders.length === 0)
+		) {
 			continue;
 		}
 		try {
@@ -99,8 +105,7 @@ export interface FactoryDeps {
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for the raw migration-label read and the once-per-boot
- * local-providers migration sweep.
+ * Async for the raw migration-label read only.
  */
 export default async function createRecall(
 	host: SigrunHost,
@@ -124,11 +129,6 @@ export default async function createRecall(
 	} catch {
 		rawSettings = undefined;
 	}
-	// This migration runs ONCE per boot at factory start. The async factory
-	// awaits the bridged directory and notices; core's loader and server
-	// finish binding after the factory yields.
-	await migrateLocalProviders(host);
-
 	const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
 	const isLocal = (model: string): boolean => host.models.isLocal(model);
 	const modelRef = (
@@ -153,6 +153,8 @@ export default async function createRecall(
 	let searchModelCache: { signature: string; model: string } | undefined;
 	let noticeRaised = false;
 	let noticeAttempting = false;
+	let localProvidersSweepAttempting = false;
+	let localProvidersSweepRaised = false;
 	const warnEmbedding = createEmbeddingWarnings();
 
 	const embeddings: EmbeddingHost | undefined = host.embeddings;
@@ -236,6 +238,19 @@ export default async function createRecall(
 	}
 	maybeNoteEmbeddingsMoved();
 
+	function maybeMigrateLocalProviders(): void {
+		if (localProvidersSweepRaised || localProvidersSweepAttempting) return;
+		localProvidersSweepAttempting = true;
+		void migrateLocalProviders(host)
+			.then(() => {
+				localProvidersSweepRaised = true;
+			})
+			.finally(() => {
+				localProvidersSweepAttempting = false;
+			});
+	}
+	maybeMigrateLocalProviders();
+
 	interface SemanticDeps {
 		readonly embeddings: EmbeddingHost;
 		/** The live default: what the sweep re-embeds into. */
@@ -301,6 +316,7 @@ export default async function createRecall(
 	}
 
 	async function semantic(): Promise<SemanticDeps | undefined> {
+		maybeMigrateLocalProviders();
 		if (embeddings === undefined) return undefined;
 		maybeNoteEmbeddingsMoved();
 		try {
@@ -370,6 +386,7 @@ export default async function createRecall(
 		now: deps.now ?? Date.now,
 	});
 	function getServices() {
+		maybeMigrateLocalProviders();
 		if (services !== undefined) return services;
 		const searcher = createSearcher({
 			db: db(),
@@ -486,7 +503,10 @@ export default async function createRecall(
 		],
 		routes: createRoutes({
 			searcher: {
-				search: (query, context, limit) => getServices().searcher.search(query, context, limit),
+				search: (query, context, limit) => {
+					maybeMigrateLocalProviders();
+					return getServices().searcher.search(query, context, limit);
+				},
 			},
 			sweep: () => runSweep(backfillDeps()),
 		}),

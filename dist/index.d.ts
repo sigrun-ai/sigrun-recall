@@ -9,7 +9,6 @@ export interface FactoryDeps {
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for the raw migration-label read and the once-per-boot
- * local-providers migration sweep.
+ * Async for the raw migration-label read only.
  */
 export default function createRecall(host: SigrunHost, deps?: FactoryDeps): Promise<SigrunExtensionResult>;

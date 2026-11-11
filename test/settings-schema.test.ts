@@ -9,7 +9,7 @@
  * `host.embeddings`).
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { assertDrawable, checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 
 import createRecall from "../src/index.js";
@@ -240,6 +240,7 @@ describe("recall settings schema", () => {
 				...stub.host,
 			} as never;
 			const first = await createRecall(host);
+			await vi.waitFor(() => expect(notices).toHaveLength(1));
 			await first.harnessShutdown?.({} as never, {} as never);
 			expect(notices).toHaveLength(1);
 			expect(notices[0]).toMatchObject({
