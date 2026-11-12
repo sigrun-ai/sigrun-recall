@@ -4,14 +4,17 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 
 import type { Confidentiality, RecallDb } from "../db.js";
 import { messageKey, renderBlock } from "../inject.js";
+import { mayRead } from "../policy.js";
 import type { Searcher } from "../search.js";
 import { assembleSitting, previousExchange } from "./assemble.js";
 import { isBoundary, type SittingOptions } from "./boundary.js";
+import { firstSitting, messageText } from "./drafter.js";
 import {
 	loadLineage,
 	type EntriesReader,
 	type InContextRule,
 	type LineageLink,
+	type LineageMemo,
 } from "./lineage.js";
 import { renderToc, sealArgs, tocSnapshot } from "./toc.js";
 import type { LineRow, SittingRow } from "./types.js";
@@ -39,18 +42,14 @@ export interface SittingRequestDeps {
 		cls: Confidentiality;
 		sources: readonly number[];
 	}): Promise<boolean>;
-	now(): number;
+	/** Shared per boot; without it lineage is loaded for this attempt only. */
+	lineageMemo?: LineageMemo;
 }
 
 const USER_INPUT_KINDS = new Set(["pi.user", "sigrun.user.expanded"]);
 
 function userText(message: UserMessage): string {
-	return typeof message.content === "string"
-		? message.content
-		: message.content
-				.filter((part) => part.type === "text")
-				.map((part) => (part.type === "text" ? part.text : ""))
-				.join("");
+	return messageText(message);
 }
 
 /**
@@ -110,34 +109,20 @@ async function findUserEntry(
 	return undefined;
 }
 
-function firstSitting(
-	conversationId: number,
-	entry: EntryRecord,
-): SittingRow {
-	const message = entry.model?.[0];
-	return {
-		conversationId,
-		startEntryId: entry.id,
-		startAt: message?.timestamp ?? 0,
-		boundary: false,
-		boundaryText:
-			message !== undefined && message.role === "user" ? userText(message) : "",
-		previous: null,
-		block: null,
-		title: null,
-		titleState: "none",
-	};
-}
-
 /** The earliest user input entry, for the first non-boundary sitting row. */
 async function findFirstUserEntry(
+	conversationId: number,
 	read: EntriesReader,
 ): Promise<EntryRecord | undefined> {
 	let cursor: unknown;
 	for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
 		const page = await read({ order: "ascending" }, 200, cursor);
 		for (const entry of page.items) {
-			if (USER_INPUT_KINDS.has(entry.kind) && entry.model?.[0]?.role === "user") {
+			if (
+				entry.conversationId === conversationId &&
+				USER_INPUT_KINDS.has(entry.kind) &&
+				entry.model?.[0]?.role === "user"
+			) {
 				return entry;
 			}
 		}
@@ -170,7 +155,9 @@ export async function applySittings(
 	}];
 	const lineage = ineligible
 		? ownLineage()
-		: await loadLineage(deps.conversationId, deps.read);
+		: await loadLineage(deps.conversationId, deps.read, {
+			...(deps.lineageMemo === undefined ? {} : { memo: deps.lineageMemo }),
+		});
 	const lineageIds = lineage.map((link) => link.conversationId);
 	const sittings = deps.db.sittings(lineageIds);
 	const boundarySitting = currentBoundary(sittings, lineage);
@@ -218,13 +205,13 @@ export async function applySittings(
 		if (!isBoundary(messages, newestIndex, sinceIndex, deps.options)) {
 			deps.db.putDecision(deps.conversationId, entry.id, false);
 		} else {
-			const committed = await drawBoundary(messages, newestIndex, entry, lineage, deps);
-			if (committed) {
-				boundary = deps.db
-					.sittings([deps.conversationId])
-					.find((row) => row.boundary && row.startEntryId === entry.id);
-			}
+			await drawBoundary(messages, newestIndex, entry, lineage, deps);
 		}
+		// Re-read even after a losing createBoundary race: the concurrent
+		// winner's committed row governs this request too.
+		boundary = deps.db
+			.sittings([deps.conversationId])
+			.find((row) => row.boundary && row.startEntryId === entry.id) ?? boundary;
 	}
 
 	if (boundary === undefined) return { rule, skipTimestamps: new Set() };
@@ -245,12 +232,13 @@ export async function applySittings(
 		.filter(Boolean)
 		.join("\n\n");
 
-	// Local-only material that WILL be shown taints from the next entry on,
-	// exactly as applyRecall does.
+	// Taint only material actually rendered for this model. An unreadable
+	// local-only TOC entry is filtered out and must not taint the request.
 	const localTable = block.toc.some(
 		(tocEntry) =>
 			tocEntry.cls === "local-only" &&
-			table.includes(tocEntry.text),
+			tocEntry.text.length > 0 &&
+			mayRead(tocEntry.cls, deps.model, deps.isLocal),
 	);
 	if (localTable || (recallText !== "" && block.recall.cls === "local-only")) {
 		deps.db.setTaint(
@@ -266,7 +254,7 @@ export async function applySittings(
 	});
 	return {
 		messages: assembled,
-		skipTimestamps: new Set([newest.timestamp]),
+		skipTimestamps: new Set([boundary.startAt]),
 		rule: effectiveRule,
 	};
 }
@@ -313,7 +301,7 @@ async function drawBoundary(
 	const own = deps.db.sittings([deps.conversationId]);
 	let previousSitting = own.findLast((row) => row.startEntryId < entry.id);
 	if (previousSitting === undefined && own.length === 0) {
-		const first = await findFirstUserEntry(deps.read);
+		const first = await findFirstUserEntry(deps.conversationId, deps.read);
 		if (first !== undefined) {
 			const row = firstSitting(deps.conversationId, first);
 			deps.db.putSitting(row);

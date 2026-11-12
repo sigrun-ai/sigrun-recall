@@ -16,6 +16,7 @@ import { applyRecall, injectionReadable } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
 import { gapMs } from "./sittings/boundary.js";
 import { applySittings } from "./sittings/request.js";
+import { createLineageMemo } from "./sittings/lineage.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
 async function migrateLocalProviders(host) {
@@ -97,6 +98,7 @@ export default async function createRecall(host, deps = {}) {
     const isLocal = (model) => host.models.isLocal(model);
     const modelRef = (model) => model === undefined ? undefined : { provider: model.provider, id: model.modelId };
     let database;
+    const lineageMemo = createLineageMemo();
     let services;
     const pending = new Set();
     /**
@@ -425,7 +427,7 @@ export default async function createRecall(host, deps = {}) {
                             conversationId: api.conversationId,
                             db: db(),
                             meta: liveMeta,
-                            enabled: prefs.sittings,
+                            enabled: prefs.sittings && prefs.autoRecall,
                             options: {
                                 minGapMs: gapMs(live.sittings.minGapMinutes, model === undefined
                                     ? undefined
@@ -437,7 +439,7 @@ export default async function createRecall(host, deps = {}) {
                             read: entriesReader,
                             searcher: getServices().searcher,
                             readable: (injection) => injectionReadable(injection, injectDeps),
-                            now: deps.now ?? Date.now,
+                            lineageMemo,
                         });
                         const messages = await applyRecall(result.messages ?? request.messages, {
                             ...injectDeps,

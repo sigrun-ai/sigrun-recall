@@ -30,7 +30,7 @@ export interface DrafterDeps {
 	now(): number;
 }
 
-function messageText(message: Message | undefined): string {
+export function messageText(message: Message | undefined): string {
 	if (message === undefined) return "";
 	if (typeof message.content === "string") return message.content;
 	return message.content
@@ -117,7 +117,7 @@ async function readFirstUser(
 	return undefined;
 }
 
-function firstSitting(conversationId: number, entry: EntryRecord): SittingRow {
+export function firstSitting(conversationId: number, entry: EntryRecord): SittingRow {
 	return {
 		conversationId,
 		startEntryId: entry.id,

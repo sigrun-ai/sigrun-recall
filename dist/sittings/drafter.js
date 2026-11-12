@@ -6,7 +6,7 @@ const PROMPT_CHAR_BUDGET = 6000;
 const COMPLETE_TIMEOUT_MS = 60_000;
 const MAX_COLLAPSES = 100;
 const MAX_FIRST_USER_PAGES = 20;
-function messageText(message) {
+export function messageText(message) {
     if (message === undefined)
         return "";
     if (typeof message.content === "string")
@@ -63,7 +63,7 @@ async function readFirstUser(host, conversationId) {
     }
     return undefined;
 }
-function firstSitting(conversationId, entry) {
+export function firstSitting(conversationId, entry) {
     return {
         conversationId,
         startEntryId: entry.id,

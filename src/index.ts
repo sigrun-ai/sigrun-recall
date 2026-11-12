@@ -33,6 +33,7 @@ import { applyRecall, injectionReadable, type InjectDeps } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
 import { gapMs } from "./sittings/boundary.js";
 import { applySittings } from "./sittings/request.js";
+import { createLineageMemo } from "./sittings/lineage.js";
 import {
 	createEmbeddingWarnings,
 	createSqliteVectorIndex,
@@ -140,6 +141,7 @@ export default async function createRecall(
 	): { provider: string; id: string } | undefined =>
 		model === undefined ? undefined : { provider: model.provider, id: model.modelId };
 	let database: RecallDb | undefined;
+	const lineageMemo = createLineageMemo();
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
 		tools: ReturnType<typeof createTools>;
@@ -523,7 +525,7 @@ export default async function createRecall(
 							conversationId: api.conversationId,
 							db: db(),
 							meta: liveMeta,
-							enabled: prefs.sittings,
+							enabled: prefs.sittings && prefs.autoRecall,
 							options: {
 								minGapMs: gapMs(
 									live.sittings.minGapMinutes,
@@ -538,7 +540,7 @@ export default async function createRecall(
 							read: entriesReader,
 							searcher: getServices().searcher,
 							readable: (injection) => injectionReadable(injection, injectDeps),
-							now: deps.now ?? Date.now,
+							lineageMemo,
 						});
 						const messages = await applyRecall(result.messages ?? request.messages, {
 							...injectDeps,

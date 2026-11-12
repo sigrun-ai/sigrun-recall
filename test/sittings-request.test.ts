@@ -22,7 +22,8 @@ import {
 	SITTING_HEADER,
 	type SittingRequestDeps,
 } from "../src/sittings/request.js";
-import type { EntriesReader } from "../src/sittings/lineage.js";
+import { applyRecall } from "../src/inject.js";
+import { createLineageMemo, type EntriesReader } from "../src/sittings/lineage.js";
 import { withDeclaredSettings } from "./fake-host.js";
 
 const HOUR = 3_600_000;
@@ -173,7 +174,6 @@ function deps(overrides: Partial<SittingRequestDeps> = {}): SittingRequestDeps {
 		read: async () => ({ items: [] }),
 		searcher: NO_HITS,
 		readable: async () => true,
-		now: () => BOUNDARY + HOUR,
 		...overrides,
 	};
 }
@@ -293,6 +293,141 @@ describe("applySittings", () => {
 		);
 		// The follow-up carries no sitting block.
 		expect(textParts(second.messages?.at(-1))).toEqual(["follow-up question"]);
+	});
+
+	it("a follow-up gets ordinary recall while only the boundary is skipped", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		const d = deps({ db, read: reader(entries) });
+		await applySittings(messages, d);
+		const a3 = assistant("boundary answer", BOUNDARY + 30_000);
+		const followUp = user("follow-up question", BOUNDARY + 60_000);
+		const nextMessages = [...messages, a3, followUp];
+		const nextEntries = [
+			...entries,
+			entry(4, 1, "pi.assistant", a3),
+			entry(5, 1, "pi.user", followUp),
+		];
+		const result = await applySittings(nextMessages, {
+			...d,
+			read: reader(nextEntries),
+		});
+		expect(result.skipTimestamps).toEqual(new Set([BOUNDARY]));
+		expect(result.skipTimestamps.has(followUp.timestamp)).toBe(false);
+
+		let searches = 0;
+		// Ordinary applyRecall rechecks the stored hit against the real item
+		// table before rendering it.
+		const source = hit("follow-up reference", 11).item;
+		const sourceId = db.insertItem({ ...source }, "follow-up reference")!;
+		const recalled = await applyRecall(result.messages!, {
+			conversationId: 1,
+			db,
+			searcher: {
+				search: async () => {
+					searches += 1;
+					return [hit("follow-up reference", sourceId)];
+				},
+			},
+			meta: meta(),
+			model: undefined,
+			autoRecall: true,
+			internal: false,
+			inContext: result.rule,
+			skipTimestamps: result.skipTimestamps,
+			isLocal: () => false,
+			sourceMeta: async () => meta(),
+		});
+		expect(searches).toBe(1);
+		expect(textParts(recalled?.at(-1))).toEqual([
+			"follow-up question",
+			expect.stringContaining("follow-up reference"),
+		]);
+		const boundaryText = textParts(recalled?.find(
+			(message) => message.timestamp === BOUNDARY,
+		)).join("\n");
+		expect(boundaryText.split("[Recalled from past conversations").length - 1).toBe(0);
+	});
+
+	it("a fork anchors its first sitting at its own first user entry", async () => {
+		const { messages } = fixture();
+		const entries: EntryRecord[] = [
+			entry(1, 1, "pi.user", user("ancestor question", T0 - HOUR)),
+			...fixture().entries.map((row) =>
+				entry(row.id, 2, row.kind, row.model?.[0]),
+			),
+		];
+		const db = memoryDb();
+		const result = await applySittings(messages, deps({
+			conversationId: 2,
+			db,
+			read: reader(entries),
+		}));
+		expect(result.messages).toBeDefined();
+		const first = db.sittings([2]).find((row) => !row.boundary);
+		expect(first?.startEntryId).toBe(1);
+		expect(first?.boundaryText).toBe("old question");
+		expect(db.sittings([2])).toHaveLength(2);
+		expect(db.lines([2])).toHaveLength(1);
+	});
+
+	it("the lineage memo avoids rescanning inherited entries on later requests", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		const memo = createLineageMemo();
+		let lineageScans = 0;
+		const countingRead: EntriesReader = async (query, limit, cursor) => {
+			if (query.order === "ascending") lineageScans += 1;
+			return reader(entries)(query, limit, cursor);
+		};
+		const d = deps({ db, read: countingRead, lineageMemo: memo });
+		await applySittings(messages, d);
+		const firstLineageScans = lineageScans;
+		await applySittings(messages, d);
+		expect(lineageScans).toBe(firstLineageScans);
+	});
+
+	it("a local-only TOC line taints only when it is rendered", async () => {
+		for (const local of [false, true]) {
+			const { entries, messages } = fixture();
+			const db = memoryDb();
+			db.putLineDraft({
+				conversationId: 1,
+				startEntryId: 1,
+				text: "private sitting summary",
+				cls: "local-only",
+				coversThrough: 3,
+			});
+			const result = await applySittings(messages, deps({
+				db,
+				read: reader(entries),
+				model: { provider: local ? "acme-local" : "acme", id: "chat-1" },
+				isLocal: () => local,
+			}));
+			const block = textParts(result.messages?.at(-1))[0]!;
+			expect(block.includes("private sitting summary")).toBe(local);
+			expect(db.taintFrom(1)).toBe(local ? 1 : undefined);
+		}
+	});
+
+	it("a locally committed boundary trims a concurrent losing attempt", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		const d = deps({ db, read: reader(entries) });
+		const original = db.createBoundary.bind(db);
+		let raced = false;
+		db.createBoundary = (row, seal) => {
+			if (!raced) {
+				raced = true;
+				expect(original(row, seal)).toBe(true);
+				return false;
+			}
+			return original(row, seal);
+		};
+		const result = await applySittings(messages, d);
+		expect(result.messages).toBeDefined();
+		expect(result.skipTimestamps).toEqual(new Set([BOUNDARY]));
+		expect(result.rule.boundary).toEqual({ entryId: 3, at: BOUNDARY });
 	});
 
 	it("local-only recall text is withheld from a non-local model and taints when shown to a local one", async () => {
@@ -533,8 +668,27 @@ describe("beforeRequest sittings wiring", () => {
 		}
 	});
 
+	it("auto-recall off disables sittings as well as ordinary injection", async () => {
+		const { result, beforeRequest, api, context } = await boot({
+			sharedSettings: { sittings: { minGapMinutes: 60, minHistoryTokens: 0 } },
+			userSettings: { autoRecall: false, sittings: true },
+		});
+		try {
+			const { messages } = fixture();
+			const returned = await beforeRequest(
+				{ messages },
+				api as unknown as HookApi,
+				context as never,
+			);
+			expect(returned).toBeUndefined();
+		} finally {
+			await result.harnessShutdown?.({} as never, {} as never);
+		}
+	});
+
 	it("the model's prompt cache lifetime raises the gap", async () => {
 		const { result, beforeRequest, api, context } = await boot({
+			sharedSettings: { sittings: { minGapMinutes: 60, minHistoryTokens: 0 } },
 			model: { provider: "acme-local", modelId: "chat-1" },
 			promptCache: { long: 3 * 3600 },
 		});
