@@ -16,6 +16,8 @@ export interface SittingTitlerDeps {
 export interface SittingTitler {
     onSettled(event: RunSettledEvent): void;
     idle(): Promise<void>;
+    /** Stop host/DB effects, wait for the current call up to `timeoutMs`. */
+    shutdown(timeoutMs?: number): Promise<void>;
 }
 /** Title pending sittings in the background, one settled event at a time. */
 export declare function createSittingTitler(deps: SittingTitlerDeps): SittingTitler;

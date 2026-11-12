@@ -1,10 +1,11 @@
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { RunSettledEvent, SigrunHost } from "@sigrun/sigrun/extension";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RecallDb } from "../src/db.js";
 import {
+	cleanTitle,
 	createSittingTitler,
 	TITLE_PROMPT,
 } from "../src/sittings/titles.js";
@@ -277,5 +278,145 @@ describe("sitting titler", () => {
 			label: "New sitting · Plan the vegetable garden this spring",
 		}]);
 		expect(logs).toEqual([]);
+	});
+
+	it("taint after the sitting starts keeps its answer away from the model", async () => {
+		const fake = fakeHost();
+		const db = memoryDb();
+		db.setTaint(1, 15);
+		const { titler, logs } = rig(fake, db);
+
+		titler.onSettled(answered());
+		await titler.idle();
+
+		expect(fake.calls).toEqual([]);
+		expect(fake.names).toEqual([{
+			id: CONVERSATION,
+			title: "Plan the vegetable garden this spring",
+		}]);
+		expect(fake.marks).toEqual([{
+			id: CONVERSATION,
+			at: 10 as EntryId,
+			label: "New sitting · Plan the vegetable garden this spring",
+		}]);
+		expect(db.sittings([1])[0]).toMatchObject({
+			title: "Plan the vegetable garden this spring",
+			titleState: "done",
+		});
+		expect(logs).toEqual([]);
+	});
+
+	it("two pending sittings complete sequentially and the newest title wins", async () => {
+		const fake = fakeHost();
+		const db = memoryDb();
+		const logs: string[] = [];
+		let releaseFirst!: (value: { text: string; model: string }) => void;
+		const first = new Promise<{ text: string; model: string }>((resolve) => {
+			releaseFirst = resolve;
+		});
+		fake.host.models.complete = async () => {
+			fake.calls.push({ prompt: "title" });
+			if (fake.calls.length === 1) return first;
+			return { text: "Newest sitting title", model: "acme-local/chat-1" };
+		};
+		db.putSitting(sitting());
+		db.putSitting(sitting({ startEntryId: 15, boundaryText: "Newest question" }));
+		const titler = createSittingTitler({
+			db: () => db,
+			host: fake.host,
+			log: (message: string) => logs.push(message),
+		});
+
+		titler.onSettled(answered());
+		await vi.waitFor(() => expect(fake.calls).toHaveLength(1));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fake.calls).toHaveLength(1);
+		expect(fake.names).toEqual([]);
+		releaseFirst({ text: "First sitting title", model: "acme-local/chat-1" });
+		await titler.idle();
+
+		expect(fake.calls).toHaveLength(2);
+		expect(fake.names.map((name) => name.title)).toEqual([
+			"First sitting title",
+			"Newest sitting title",
+		]);
+		expect(fake.marks.map((mark) => mark.label)).toEqual([
+			"New sitting · First sitting title",
+			"New sitting · Newest sitting title",
+		]);
+		expect(fake.marks.map((mark) => Number(mark.at))).toEqual([10, 15]);
+		expect(logs).toEqual([]);
+	});
+
+	it("a shutdown abandons title work instead of reopening the database", async () => {
+		const fake = fakeHost();
+		const db = memoryDb();
+		db.putSitting(sitting());
+		let closed = false;
+		const logs: string[] = [];
+		const titler = createSittingTitler({
+			db: () => {
+				if (closed) throw new Error("database reopened");
+				return db;
+			},
+			host: fake.host,
+			log: (message: string) => logs.push(message),
+		});
+		let release!: (value: { text: string; model: string }) => void;
+		fake.host.models.complete = () => new Promise((resolve) => { release = resolve; });
+
+		titler.onSettled(answered());
+		await Promise.resolve();
+		const shutdown = titler.shutdown();
+		closed = true;
+		release({ text: "Late title", model: "acme-local/chat-1" });
+		await shutdown;
+		await titler.idle();
+
+		expect(fake.names).toEqual([]);
+		expect(fake.marks).toEqual([]);
+		expect(db.sittings([1])[0]?.titleState).toBe("pending");
+		expect(logs).toEqual([]);
+	});
+
+	it("a database failure logs once and does not poison later settles", async () => {
+		const fake = fakeHost();
+		const db = memoryDb();
+		const logs: string[] = [];
+		let fail = true;
+		const titler = createSittingTitler({
+			db: () => {
+				if (fail) throw new Error("database unavailable");
+				return db;
+			},
+			host: fake.host,
+			log: (message: string) => logs.push(message),
+		});
+		db.putSitting(sitting());
+
+		titler.onSettled(answered());
+		await titler.idle();
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain("database unavailable");
+
+		fail = false;
+		titler.onSettled(answered());
+		await titler.idle();
+		expect(fake.calls).toHaveLength(1);
+		expect(db.sittings([1])[0]?.titleState).toBe("done");
+		expect(logs).toHaveLength(1);
+	});
+
+	it.each([
+		["`Quoted title`", "Quoted title"],
+		["Title: Garden plans", "Garden plans"],
+		["Garden plans!", "Garden plans"],
+		["one two three four five six seven", "one two three four five six"],
+		[
+			`first ${"x".repeat(60)}`,
+			"first",
+		],
+	])("cleans %j without drifting from core", (raw, expected) => {
+		expect(cleanTitle(raw)).toBe(expected);
 	});
 });

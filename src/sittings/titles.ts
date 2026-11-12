@@ -49,33 +49,48 @@ export interface SittingTitlerDeps {
 export interface SittingTitler {
 	onSettled(event: RunSettledEvent): void;
 	idle(): Promise<void>;
+	/** Stop host/DB effects, wait for the current call up to `timeoutMs`. */
+	shutdown(timeoutMs?: number): Promise<void>;
 }
 
 /** Title pending sittings in the background, one settled event at a time. */
 export function createSittingTitler(deps: SittingTitlerDeps): SittingTitler {
 	let tail: Promise<void> = Promise.resolve();
+	let stopped = false;
 	return {
 		onSettled(event) {
-			tail = tail.then(() => titleSittings(event));
+			tail = tail
+				.then(() => titleSittings(event))
+				.catch((error: unknown) => {
+					deps.log(`recall: sitting titling failed — ${errorText(error)}`);
+				});
 		},
 		idle: () => tail,
+		async shutdown(timeoutMs = 20_000) {
+			stopped = true;
+			let timer: ReturnType<typeof setTimeout>;
+			await Promise.race([
+				tail,
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, timeoutMs);
+					timer.unref?.();
+				}),
+			]).finally(() => clearTimeout(timer));
+		},
 	};
 
 	async function titleSittings(event: RunSettledEvent): Promise<void> {
-		if (event.outcome?.status !== "answered" || event.replayed === true) return;
+		if (stopped || event.outcome?.status !== "answered" || event.replayed === true) return;
 		const id = event.conversationId;
 		const answerEntryId = Number(event.outcome.answerEntryId);
 		const taintFrom = deps.db().taintFrom(Number(id));
 		const pending = deps.db().sittings([Number(id)]).filter(
 			(row) => row.titleState === "pending" && row.startEntryId < answerEntryId,
 		);
+		const localOnly = taintFrom !== undefined && taintFrom <= answerEntryId;
 		for (const row of pending) {
-			await titleSitting(
-				row,
-				event.outcome.answer,
-				taintFrom !== undefined && row.startEntryId >= taintFrom,
-				id,
-			);
+			if (stopped) return;
+			await titleSitting(row, event.outcome.answer, localOnly, id);
 		}
 	}
 
@@ -90,12 +105,14 @@ export function createSittingTitler(deps: SittingTitlerDeps): SittingTitler {
 				? cleanTitle(row.boundaryText)
 				: cleanTitle(await completion(row, answer));
 			if (title === undefined) throw new Error("no usable title");
+			if (stopped) return;
 			if (typeof deps.host.conversations.setAutoName === "function") {
 				await deps.host.conversations.setAutoName(id, title);
 			}
 			await mark(id, row.startEntryId, `New sitting · ${title}`);
 			deps.db().setSittingTitle(row.conversationId, row.startEntryId, title, "done");
 		} catch (error) {
+			if (stopped) return;
 			try {
 				await mark(id, row.startEntryId, "New sitting");
 				deps.db().setSittingTitle(row.conversationId, row.startEntryId, null, "failed");

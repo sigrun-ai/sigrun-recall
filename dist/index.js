@@ -562,6 +562,9 @@ export default async function createRecall(host, deps = {}) {
                     }),
                 ]).finally(() => clearTimeout(timer));
             }
+            // Drain title work before closing its database, under the SAME
+            // budget as embedding capture; a hung completion is abandoned.
+            await titler.shutdown(Math.max(0, deadline - Date.now()));
             database?.close();
             database = undefined;
         },
