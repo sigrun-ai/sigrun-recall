@@ -148,8 +148,8 @@ describe("createRecall", () => {
     },
   );
 
-	it("shutdown drains the titler within the deadline and never reopens the database", { timeout: 40_000 }, async () => {
-		vi.useRealTimers();
+	it("shutdown drains the titler within the deadline and never reopens the database", async () => {
+		vi.useFakeTimers();
 		try {
 			const root = await mkdtemp(join(tmpdir(), "recall-title-drain-"));
 			let closeCount = 0;
@@ -229,14 +229,12 @@ describe("createRecall", () => {
 			await Promise.resolve();
 			expect(titleCalls).toBe(1);
 			const shutdown = result.harnessShutdown?.({} as never, {} as never);
-			let resolved = false;
-			void shutdown!.then(() => { resolved = true; });
+			await vi.advanceTimersByTimeAsync(30_000);
 			await shutdown;
-			expect(resolved).toBe(true);
 			expect(closeCount).toBe(1);
 			expect(opensAfterClose).toEqual([]);
 			releaseTitle();
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await vi.advanceTimersByTimeAsync(0);
 			expect(opensAfterClose).toEqual([]);
 			await rm(root, { recursive: true, force: true });
 		} finally {

@@ -416,6 +416,8 @@ describe("sitting titler", () => {
 			`first ${"x".repeat(60)}`,
 			"first",
 		],
+		["x".repeat(61), "x".repeat(60)],
+		["   \n\t  ", undefined],
 	])("cleans %j without drifting from core", (raw, expected) => {
 		expect(cleanTitle(raw)).toBe(expected);
 	});
