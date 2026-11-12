@@ -12,7 +12,7 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RecallDb } from "../src/db.js";
 import createRecall from "../src/index.js";
@@ -222,8 +222,12 @@ describe("applySittings", () => {
 		expect(sitting?.startAt).toBe(BOUNDARY);
 		expect(sitting?.block?.header).toBe(SITTING_HEADER);
 		expect(sitting?.block?.recall.sources).toEqual([1]);
-		// The first, non-boundary sitting was created for the first user entry.
-		expect(db.sittings([1]).find((row) => !row.boundary)?.startEntryId).toBe(1);
+		// The first, non-boundary sitting is never titled by recall.
+		const first = db.sittings([1]).find((row) => !row.boundary);
+		expect(first?.startEntryId).toBe(1);
+		expect(first?.titleState).toBe("none");
+		// Every boundary sitting gets a title attempt after its first answer.
+		expect(sitting?.titleState).toBe("pending");
 	});
 
 	it("the same request prepared twice is deep-equal, even after the settings change and new items", async () => {
@@ -620,6 +624,72 @@ describe("applySittings", () => {
 	});
 });
 
+describe("runSettled sitting titling", () => {
+	it("persists the title and writes the divider after capture", async () => {
+		const root = await mkdtemp(join(tmpdir(), "recall-sittings-settle-"));
+		tempRoots.push(root);
+		const marks: { at: number; label: string }[] = [];
+		const result = await createRecall(
+			withDeclaredSettings({
+				stores: {
+					paths: { data: root },
+					settings: { get: async () => ({}) },
+				},
+				users: { list: async () => [] },
+				models: {
+					isLocal: () => false,
+					complete: async () => ({ text: "Spring garden plans", model: "acme/chat-1" }),
+				},
+				conversations: {
+					meta: async () => meta(),
+					setAutoName: async () => ({ applied: true }),
+					markContext: async (_id: number, mark: { at: number; label: string }) => {
+						marks.push(mark);
+						return { entryId: 5 };
+					},
+				},
+			} as never),
+		);
+		try {
+			const seeded = RecallDb.open(join(root, "recall.db"));
+			seeded.putSitting({
+				conversationId: 1,
+				startEntryId: 3,
+				startAt: BOUNDARY,
+				boundary: true,
+				boundaryText: "boundary question",
+				previous: null,
+				block: null,
+				title: null,
+				titleState: "pending",
+			});
+			seeded.close();
+			await result.runSettled?.(
+				{
+					conversationId: 1,
+					outcome: {
+						status: "answered",
+						answerEntryId: 4,
+						answer: assistant("Plant in spring.", BOUNDARY + 1_000),
+					},
+				} as never,
+				{ entries: async () => ({ items: fixture().entries }) } as never,
+				{} as never,
+			);
+			await vi.waitFor(() => expect(marks).toHaveLength(1));
+			expect(marks).toEqual([{ at: 3, label: "New sitting · Spring garden plans" }]);
+			const db = RecallDb.open(join(root, "recall.db"));
+			expect(db.sittings([1])[0]).toMatchObject({
+				title: "Spring garden plans",
+				titleState: "done",
+			});
+			db.close();
+		} finally {
+			await result.harnessShutdown?.({} as never, {} as never);
+		}
+	});
+});
+
 describe("beforeRequest sittings wiring", () => {
 	async function boot(overrides: {
 		meta?: Partial<SessionMeta>;
@@ -640,7 +710,10 @@ describe("beforeRequest sittings wiring", () => {
 					user: () => ({ settings: { get: async () => overrides.userSettings ?? {} } }),
 				},
 				users: { list: async () => [] },
-				models: { isLocal: () => false },
+				models: {
+					isLocal: () => false,
+					complete: async () => ({ text: "Spring garden plans", model: "acme/chat-1" }),
+				},
 				conversations: {
 					meta: async () => meta(overrides.meta),
 					entry: async (conversationId: number, entryId: number) =>

@@ -356,7 +356,7 @@ async function drawBoundary(
 			previous: previous ?? null,
 			block: { header: SITTING_HEADER, toc, recall },
 			title: null,
-			titleState: "none",
+			titleState: "pending",
 		},
 		seal,
 	);

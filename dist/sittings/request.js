@@ -254,6 +254,6 @@ async function drawBoundary(messages, newestIndex, entry, lineage, deps) {
         previous: previous ?? null,
         block: { header: SITTING_HEADER, toc, recall },
         title: null,
-        titleState: "none",
+        titleState: "pending",
     }, seal);
 }

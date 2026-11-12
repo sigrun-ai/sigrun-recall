@@ -14,6 +14,7 @@ import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings
 import { createTools } from "./tools.js";
 import { applyRecall, injectionReadable } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
+import { createSittingTitler } from "./sittings/titles.js";
 import { gapMs } from "./sittings/boundary.js";
 import { applySittings } from "./sittings/request.js";
 import { beforeCompactSittings } from "./sittings/compact.js";
@@ -363,6 +364,11 @@ export default async function createRecall(host, deps = {}) {
         };
         return services;
     }
+    const titler = createSittingTitler({
+        db,
+        host,
+        log: (message) => console.error(message),
+    });
     const extension = {
         name: "@sigrun/recall",
         hooks: [
@@ -536,6 +542,9 @@ export default async function createRecall(host, deps = {}) {
             catch (error) {
                 console.error("recall: conversation capture failed", error);
             }
+            // Only enqueue here: capture completes before title classification,
+            // but no completion is awaited on the settled-event reply path.
+            titler.onSettled(event);
         },
         harnessShutdown: async () => {
             const deadline = Date.now() + 30_000;
