@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import {
 	AgentDoc,
+	CompactionTask,
 	defineExtension,
 	GenerationTask,
 	hook,
@@ -33,6 +34,7 @@ import { applyRecall, injectionReadable, type InjectDeps } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
 import { gapMs } from "./sittings/boundary.js";
 import { applySittings } from "./sittings/request.js";
+import { beforeCompactSittings } from "./sittings/compact.js";
 import { createLineageMemo } from "./sittings/lineage.js";
 import {
 	createEmbeddingWarnings,
@@ -474,6 +476,31 @@ export default async function createRecall(
 						});
 					} catch (error) {
 						console.error("recall: tool-result externalization failed", error);
+						return undefined;
+					}
+				},
+			}),
+			hook(CompactionTask, {
+				beforeCompact: async (compaction, api, context) => {
+					try {
+						return await beforeCompactSittings(compaction, {
+							conversationId: api.conversationId,
+							db: db(),
+							read: (query, limit, cursor) =>
+								api.entries(
+									{
+										...query,
+										minEntryId: query.minEntryId as EntryId | undefined,
+										maxEntryId: query.maxEntryId as EntryId | undefined,
+									},
+									limit,
+									cursor as Cursor | undefined,
+									context,
+								),
+							complete: (input) => host.models.complete(input),
+						});
+					} catch (error) {
+						console.error("recall: sittings compaction guard failed", error);
 						return undefined;
 					}
 				},

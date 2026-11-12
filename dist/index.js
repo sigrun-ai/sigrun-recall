@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { AgentDoc, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
+import { AgentDoc, CompactionTask, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
@@ -16,6 +16,7 @@ import { applyRecall, injectionReadable } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
 import { gapMs } from "./sittings/boundary.js";
 import { applySittings } from "./sittings/request.js";
+import { beforeCompactSittings } from "./sittings/compact.js";
 import { createLineageMemo } from "./sittings/lineage.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
@@ -387,6 +388,26 @@ export default async function createRecall(host, deps = {}) {
                     }
                     catch (error) {
                         console.error("recall: tool-result externalization failed", error);
+                        return undefined;
+                    }
+                },
+            }),
+            hook(CompactionTask, {
+                beforeCompact: async (compaction, api, context) => {
+                    try {
+                        return await beforeCompactSittings(compaction, {
+                            conversationId: api.conversationId,
+                            db: db(),
+                            read: (query, limit, cursor) => api.entries({
+                                ...query,
+                                minEntryId: query.minEntryId,
+                                maxEntryId: query.maxEntryId,
+                            }, limit, cursor, context),
+                            complete: (input) => host.models.complete(input),
+                        });
+                    }
+                    catch (error) {
+                        console.error("recall: sittings compaction guard failed", error);
                         return undefined;
                     }
                 },

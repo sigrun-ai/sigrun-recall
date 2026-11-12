@@ -16,7 +16,7 @@ function userText(message) {
  * the fork point is not part of this conversation's history: all inherited
  * material stays in context (no boundary in the rule).
  */
-function currentBoundary(sittings, lineage) {
+export function currentBoundary(sittings, lineage) {
     let best;
     for (const sitting of sittings) {
         if (!sitting.boundary)

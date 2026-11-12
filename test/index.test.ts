@@ -39,7 +39,7 @@ describe("createRecall", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("factory result declares the backfill job, both tools, both hooks and both routes", async () => {
+  it("factory result declares the backfill job, both tools, all hooks and both routes", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-index-"));
     const result = await createRecall(
       withDeclaredSettings({
@@ -62,7 +62,7 @@ describe("createRecall", () => {
     expect(
       result.extension?.tasks?.map((task) => task.definition.name),
     ).toEqual(["recall.backfill"]);
-    expect(result.extension?.hooks).toHaveLength(2);
+    expect(result.extension?.hooks).toHaveLength(3);
     expect(result.workers?.map((worker) => worker.name)).toEqual(["sittings"]);
     expect(
       result.routes?.map((route) => `${route.method} ${route.path}`),

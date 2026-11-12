@@ -58,7 +58,7 @@ function userText(message: UserMessage): string {
  * the fork point is not part of this conversation's history: all inherited
  * material stays in context (no boundary in the rule).
  */
-function currentBoundary(
+export function currentBoundary(
 	sittings: readonly SittingRow[],
 	lineage: readonly LineageLink[],
 ): SittingRow | undefined {
