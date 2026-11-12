@@ -354,7 +354,7 @@ describe("applySittings", () => {
 		const entries: EntryRecord[] = [
 			entry(1, 1, "pi.user", user("ancestor question", T0 - HOUR)),
 			...fixture().entries.map((row) =>
-				entry(row.id, 2, row.kind, row.model?.[0]),
+				entry(row.id + 10, 2, row.kind, row.model?.[0]),
 			),
 		];
 		const db = memoryDb();
@@ -365,7 +365,8 @@ describe("applySittings", () => {
 		}));
 		expect(result.messages).toBeDefined();
 		const first = db.sittings([2]).find((row) => !row.boundary);
-		expect(first?.startEntryId).toBe(1);
+		// The fork's own first user entry is 11, not the ancestor's entry 1.
+		expect(first?.startEntryId).toBe(11);
 		expect(first?.boundaryText).toBe("old question");
 		expect(db.sittings([2])).toHaveLength(2);
 		expect(db.lines([2])).toHaveLength(1);
@@ -408,6 +409,82 @@ describe("applySittings", () => {
 			expect(block.includes("private sitting summary")).toBe(local);
 			expect(db.taintFrom(1)).toBe(local ? 1 : undefined);
 		}
+	});
+
+	it("a local-only TOC line dropped by the byte budget does not taint", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		const now = messages.at(-1)!.timestamp;
+		// Committed rows let this test exceed the real 3072-byte TOC budget
+		// without changing production rendering or its budget constant.
+		db.createBoundary(
+			{
+				conversationId: 1,
+				startEntryId: 1,
+				startAt: now - 4_000,
+				boundary: false,
+				boundaryText: "first question",
+				previous: null,
+				block: null,
+				title: null,
+				titleState: "none",
+			},
+			undefined,
+		);
+		// Give the CURRENT boundary its stored oversized TOC directly, so
+		// applySittings cannot replace it while sealing a later sitting.
+		db.createBoundary(
+			{
+				conversationId: 1,
+				startEntryId: 3,
+				startAt: now - 2_000,
+				boundary: true,
+				boundaryText: "boundary question",
+				previous: null,
+				block: {
+					header: "sittings",
+					toc: [
+						{
+							startAt: now - 4_000,
+							title: null,
+							text: `BUDGET-DROPPED-PRIVATE ${"p".repeat(3_000)}`,
+							cls: "local-only",
+						},
+						{
+							startAt: now - 3_000,
+							title: null,
+							text: "recent public sitting",
+							cls: "normal",
+						},
+					],
+					recall: { text: "", cls: "normal", sources: [] },
+				},
+				title: null,
+				titleState: "none",
+			},
+			{
+				startEntryId: 1,
+				line: {
+					text: `BUDGET-DROPPED-PRIVATE ${"p".repeat(3_000)}`,
+					cls: "local-only",
+					coversThrough: 2,
+				},
+			},
+		);
+		const result = await applySittings(messages, deps({
+			db,
+			read: reader(entries),
+			model: { provider: "acme-local", id: "chat-1" },
+			isLocal: () => true,
+		}));
+		const block = result.messages
+			?.find((message) =>
+				textParts(message).some((part) => part.includes("(older sittings")),
+			);
+		expect(block).toBeDefined();
+		expect(textParts(block).join("\n")).toContain("recent public sitting");
+		expect(textParts(block).join("\n")).not.toContain("BUDGET-DROPPED-PRIVATE");
+		expect(db.taintFrom(1)).toBeUndefined();
 	});
 
 	it("a locally committed boundary trims a concurrent losing attempt", async () => {

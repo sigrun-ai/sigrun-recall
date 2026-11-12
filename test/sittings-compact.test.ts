@@ -69,7 +69,8 @@ function marker(id: number, head: number, text: string): EntryRecord {
 		conversationId: 1,
 		kind: "pi.compaction",
 		model: [user(text, T0 + id * 1_000)],
-		data: { head, reason: "overflow" },
+		head,
+		data: { reason: "overflow" },
 	} as unknown as EntryRecord;
 }
 
@@ -312,6 +313,61 @@ describe("beforeCompactSittings", () => {
 		const db = memoryDb();
 		db.putSitting(boundarySitting(40));
 		const { complete } = completeStub(new Error("model unavailable"));
+		const result = await beforeCompactSittings(
+			{ reason: "threshold", entries: [turn(10, "old"), turn(41, "new")], firstKept: 50 },
+			deps({ db, complete }),
+		);
+		expect(result).toEqual({ decline: true });
+	});
+
+	it("a pre-boundary marker triggers summarization even when every entry id is after the boundary", async () => {
+		const db = memoryDb();
+		db.putSitting(boundarySitting(40));
+		// rangeStart (40) is not before the boundary: ONLY the marker's
+		// top-level head (30) can select the in-sitting summarizer.
+		const entries = [
+			marker(90, 30, "PRE-BOUNDARY-SUMMARY text"),
+			...Array.from({ length: 21 }, (_, index) => turn(40 + index, `turn ${40 + index}`)),
+		];
+		const { complete, calls } = completeStub("marker-classified summary");
+		const result = await beforeCompactSittings(
+			{ reason: "overflow", entries, firstKept: 61 },
+			deps({ db, complete }),
+		);
+		expect(result).toEqual({ summary: "marker-classified summary" });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.prompt).toContain("turn 40");
+		expect(calls[0]!.prompt).toContain("turn 60");
+		expect(calls[0]!.prompt).not.toContain("PRE-BOUNDARY-SUMMARY");
+	});
+
+	it("an empty completion on overflow falls back to the fixed summary", async () => {
+		const db = memoryDb();
+		db.putSitting(boundarySitting(40));
+		const { complete, calls } = completeStub("  \n");
+		const result = await beforeCompactSittings(
+			{ reason: "overflow", entries: [turn(10, "old"), turn(41, "new")], firstKept: 50 },
+			deps({ db, complete }),
+		);
+		expect(result).toEqual({ summary: OVERFLOW_SUMMARY });
+		expect(calls).toHaveLength(1);
+	});
+
+	it("an empty completion on a manual compaction falls back to the fixed summary", async () => {
+		const db = memoryDb();
+		db.putSitting(boundarySitting(40));
+		const { complete } = completeStub("");
+		const result = await beforeCompactSittings(
+			{ reason: "manual", entries: [turn(10, "old"), turn(41, "new")], firstKept: 50 },
+			deps({ db, complete }),
+		);
+		expect(result).toEqual({ summary: OVERFLOW_SUMMARY });
+	});
+
+	it("an empty completion on threshold declines", async () => {
+		const db = memoryDb();
+		db.putSitting(boundarySitting(40));
+		const { complete } = completeStub("");
 		const result = await beforeCompactSittings(
 			{ reason: "threshold", entries: [turn(10, "old"), turn(41, "new")], firstKept: 50 },
 			deps({ db, complete }),

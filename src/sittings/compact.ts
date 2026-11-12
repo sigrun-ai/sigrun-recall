@@ -23,13 +23,10 @@ export interface CompactDeps {
 	complete: SigrunHost["models"]["complete"];
 }
 
-/** A `pi.compaction` marker's backward-pointing head, when it carries one. */
+/** A `pi.compaction` marker's backward-pointing TOP-LEVEL head. */
 function markerHead(entry: EntryRecord): number | undefined {
 	if (entry.kind !== COMPACTION_KIND) return undefined;
-	const data = entry.data;
-	if (typeof data !== "object" || data === null) return undefined;
-	const head = (data as { head?: unknown }).head;
-	return typeof head === "number" ? head : undefined;
+	return typeof entry.head === "number" ? entry.head : undefined;
 }
 
 /**
@@ -118,6 +115,7 @@ export async function beforeCompactSittings(
 			prompt,
 			timeoutMs: COMPLETE_TIMEOUT_MS,
 		});
+		if (result.text.trim() === "") return beforeBoundary();
 		return { summary: result.text };
 	} catch {
 		return beforeBoundary();

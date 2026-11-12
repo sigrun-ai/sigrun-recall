@@ -159,10 +159,12 @@ export async function applySittings(messages, deps) {
         .filter(Boolean)
         .join("\n\n");
     // Taint only material actually rendered for this model. An unreadable
-    // local-only TOC entry is filtered out and must not taint the request.
+    // local-only TOC entry is filtered out and must not taint the request;
+    // neither may an entry dropped by renderToc's byte budget.
     const localTable = block.toc.some((tocEntry) => tocEntry.cls === "local-only" &&
         tocEntry.text.length > 0 &&
-        mayRead(tocEntry.cls, deps.model, deps.isLocal));
+        mayRead(tocEntry.cls, deps.model, deps.isLocal) &&
+        table.includes(tocEntry.text));
     if (localTable || (recallText !== "" && block.recall.cls === "local-only")) {
         deps.db.setTaint(deps.conversationId, (deps.db.cursor(deps.conversationId) ?? 0) + 1);
     }

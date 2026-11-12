@@ -6,15 +6,11 @@ export const SUMMARY_PROMPT = "Summarize this part of the conversation so the as
 const PROMPT_CHAR_BUDGET = 24_000;
 const COMPLETE_TIMEOUT_MS = 120_000;
 const COMPACTION_KIND = "pi.compaction";
-/** A `pi.compaction` marker's backward-pointing head, when it carries one. */
+/** A `pi.compaction` marker's backward-pointing TOP-LEVEL head. */
 function markerHead(entry) {
     if (entry.kind !== COMPACTION_KIND)
         return undefined;
-    const data = entry.data;
-    if (typeof data !== "object" || data === null)
-        return undefined;
-    const head = data.head;
-    return typeof head === "number" ? head : undefined;
+    return typeof entry.head === "number" ? entry.head : undefined;
 }
 /**
  * The in-sitting entries the summarizer may read: non-marker entries with
@@ -94,6 +90,8 @@ export async function beforeCompactSittings(compaction, deps) {
             prompt,
             timeoutMs: COMPLETE_TIMEOUT_MS,
         });
+        if (result.text.trim() === "")
+            return beforeBoundary();
         return { summary: result.text };
     }
     catch {
