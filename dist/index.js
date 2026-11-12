@@ -13,6 +13,7 @@ import { createRoutes } from "./route.js";
 import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
+import { createSittingDrafter } from "./sittings/drafter.js";
 import { createLineageMemo, loadLineage } from "./sittings/lineage.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
@@ -361,6 +362,14 @@ export default async function createRecall(host, deps = {}) {
     }
     const extension = {
         name: "@sigrun/recall",
+        workers: [
+            createSittingDrafter({
+                db,
+                host,
+                userEnabled: async (user) => (await userSettings(user)).sittings,
+                now: deps.now ?? Date.now,
+            }),
+        ],
         hooks: [
             hook(ToolTask, {
                 afterTool: async (call, result, api) => {
