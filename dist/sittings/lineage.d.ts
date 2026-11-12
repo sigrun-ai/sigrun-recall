@@ -26,7 +26,11 @@ export interface LoadLineageOptions {
     memo?: LineageMemo;
     pageSize?: number;
 }
-/** Derive each inherited conversation's fork point from the raw entries. */
+/**
+ * Derive each inherited conversation's fork point from the raw entries.
+ * Pass `options.memo` to memoize; without it the memo is throwaway for a
+ * one-shot caller, so repeated calls read the entries again.
+ */
 export declare function loadLineage(conversationId: number, read: EntriesReader, options?: LoadLineageOptions): Promise<LineageLink[]>;
 /** Whether an indexed item is already visible in the request's model context. */
 export declare function inContext(item: ItemRow, rule: InContextRule): boolean;

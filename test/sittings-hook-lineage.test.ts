@@ -73,4 +73,50 @@ describe("recall beforeRequest lineage adapter", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("internal conversations never read lineage entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "recall-lineage-internal-"));
+    try {
+      const result = await createRecall(
+        withDeclaredSettings({
+          stores: {
+            paths: { data: root },
+            settings: { get: async () => ({}) },
+            user: () => ({ settings: { get: async () => ({}) } }),
+          },
+          users: { list: async () => [] },
+          models: { isLocal: () => true },
+          conversations: {
+            meta: async () => ({ owner: "alice", internal: true }),
+          },
+        } as never),
+      );
+      const registration = result.extension?.hooks?.find(
+        (entry) => "beforeRequest" in entry.handlers,
+      );
+      const beforeRequest = (
+        registration!.handlers as Pick<GenerationHooks, "beforeRequest">
+      ).beforeRequest;
+      let reads = 0;
+      const api = {
+        conversationId: 1,
+        snapshot: async () => undefined,
+        entries: async () => {
+          reads += 1;
+          throw new Error("internal lineage read");
+        },
+      };
+      expect(
+        await beforeRequest(
+          { messages: [{ role: "user", content: "question", timestamp: 1 }] },
+          api as unknown as HookApi,
+          {} as never,
+        ),
+      ).toBeUndefined();
+      expect(reads).toBe(0);
+      await result.harnessShutdown?.({} as never, {} as never);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

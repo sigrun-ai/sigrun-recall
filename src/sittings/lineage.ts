@@ -40,7 +40,11 @@ export interface LoadLineageOptions {
 	pageSize?: number;
 }
 
-/** Derive each inherited conversation's fork point from the raw entries. */
+/**
+ * Derive each inherited conversation's fork point from the raw entries.
+ * Pass `options.memo` to memoize; without it the memo is throwaway for a
+ * one-shot caller, so repeated calls read the entries again.
+ */
 export async function loadLineage(
 	conversationId: number,
 	read: EntriesReader,

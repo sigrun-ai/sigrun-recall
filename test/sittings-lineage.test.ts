@@ -153,6 +153,19 @@ describe("conversation lineage", () => {
     ).toBe(true);
   });
 
+  it("out-of-order ancestor message times retain the maximum", async () => {
+    const memo = createLineageMemo();
+    const source = reader([
+      entry(10, 1, 9_000),
+      entry(11, 1, 2_000),
+      entry(20, 2, 3_000),
+    ]);
+    expect(await loadLineage(2, source.read, { memo })).toEqual([
+      { conversationId: 1, throughEntryId: 11, throughAt: 9_000 },
+      ownLink(2),
+    ]);
+  });
+
   it("pages 250 inherited entries and records both fork points", async () => {
     const memo = createLineageMemo();
     const entries = [
