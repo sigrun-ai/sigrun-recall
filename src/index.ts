@@ -29,6 +29,7 @@ import {
 } from "./settings-schema.js";
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
+import { loadLineage } from "./sittings/lineage.js";
 import {
 	createEmbeddingWarnings,
 	createSqliteVectorIndex,
@@ -481,6 +482,18 @@ export default async function createRecall(
 									? DEFAULT_USER_SETTINGS
 									: await userSettings(liveMeta.owner);
 							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+							const lineage = await loadLineage(api.conversationId, (query, limit, cursor) =>
+								api.entries(
+									{
+										...query,
+										minEntryId: query.minEntryId as EntryId | undefined,
+										maxEntryId: query.maxEntryId as EntryId | undefined,
+									},
+									limit,
+									cursor as never,
+									context,
+								),
+							);
 							const messages = await applyRecall(request.messages, {
 								conversationId: api.conversationId,
 								db: db(),
@@ -489,6 +502,7 @@ export default async function createRecall(
 								model: modelRef(agent?.model),
 								autoRecall: prefs.autoRecall,
 								internal: liveMeta.internal === true,
+								inContext: { lineage },
 								isLocal,
 								sourceMeta: (id) => meta(id),
 							});

@@ -1,0 +1,26 @@
+import type { EntryRecord } from "@earendil-works/pi-durable";
+import type { ItemRow } from "../db.js";
+export interface LineageLink {
+    conversationId: number;
+    throughEntryId: number;
+    throughAt: number;
+}
+export type EntriesReader = (query: {
+    minEntryId?: number;
+    maxEntryId?: number;
+    order: "ascending" | "descending";
+}, limit: number, cursor: unknown) => Promise<{
+    readonly items: readonly EntryRecord[];
+    readonly next?: unknown;
+}>;
+export interface InContextRule {
+    lineage: readonly LineageLink[];
+    boundary?: {
+        entryId: number;
+        at: number;
+    };
+}
+/** Derive each inherited conversation's fork point from the raw entries. */
+export declare function loadLineage(conversationId: number, read: EntriesReader): Promise<LineageLink[]>;
+/** Whether an indexed item is already visible in the request's model context. */
+export declare function inContext(item: ItemRow, rule: InContextRule): boolean;

@@ -82,7 +82,7 @@ function renderEntries(entries) {
 export function createTools(deps) {
     const search = defineTool({
         name: "recall_search",
-        description: "Search past conversations and stored tool results for relevant material.",
+        description: "Search past conversations and stored tool results for relevant material. Earlier sittings of this conversation are searchable too.",
         parameters: Type.Object({
             query: Type.String(),
             since: Type.Optional(Type.String()),
@@ -146,7 +146,7 @@ export function createTools(deps) {
     });
     const open = defineTool({
         name: "recall_open",
-        description: "Open a recalled passage or read a slice of a stored artifact.",
+        description: "Open a recalled passage or read a slice of a stored artifact. Earlier sittings of this conversation are searchable too.",
         parameters: Type.Object({
             handle: Type.String(),
             offset: Type.Optional(Type.Number()),

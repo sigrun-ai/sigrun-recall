@@ -13,6 +13,7 @@ import { createRoutes } from "./route.js";
 import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
+import { loadLineage } from "./sittings/lineage.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
 async function migrateLocalProviders(host) {
@@ -394,6 +395,11 @@ export default async function createRecall(host, deps = {}) {
                             ? DEFAULT_USER_SETTINGS
                             : await userSettings(liveMeta.owner);
                         const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+                        const lineage = await loadLineage(api.conversationId, (query, limit, cursor) => api.entries({
+                            ...query,
+                            minEntryId: query.minEntryId,
+                            maxEntryId: query.maxEntryId,
+                        }, limit, cursor, context));
                         const messages = await applyRecall(request.messages, {
                             conversationId: api.conversationId,
                             db: db(),
@@ -402,6 +408,7 @@ export default async function createRecall(host, deps = {}) {
                             model: modelRef(agent?.model),
                             autoRecall: prefs.autoRecall,
                             internal: liveMeta.internal === true,
+                            inContext: { lineage },
                             isLocal,
                             sourceMeta: (id) => meta(id),
                         });

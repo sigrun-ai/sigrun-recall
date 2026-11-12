@@ -3,6 +3,7 @@ import type { Sharing } from "@sigrun/shared/access";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { ArtifactStore } from "./artifacts.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
+import type { InContextRule } from "./sittings/lineage.js";
 export interface SearchContext {
     /** Acting directory user; undefined selects the system embedding default. */
     user?: string;
@@ -15,6 +16,8 @@ export interface SearchContext {
         provider: string;
         id: string;
     } | undefined;
+    /** Material already visible in the current model context is not recalled. */
+    inContext?: InContextRule;
     excludeConversation?: number;
     includeJobs: boolean;
     /** Inclusive message-time lower bound. */

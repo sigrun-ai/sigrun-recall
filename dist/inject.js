@@ -52,13 +52,43 @@ export function renderBlock(hits) {
     }
     return lines.join("\n");
 }
+/** Recheck every stored source against its live metadata and the current model. */
+export async function injectionReadable(injection, deps) {
+    if (injection.cls === "local-only" && !mayRead(injection.cls, deps.model, deps.isLocal)) {
+        return false;
+    }
+    for (const itemId of injection.sources) {
+        const item = deps.db.item(itemId);
+        if (item === undefined)
+            return false;
+        if (item.conversationId === null) {
+            // User-owned documents have no conversation; the owner is the audience.
+            if (!audienceCovers(deps.meta, { owner: item.owner ?? undefined }) ||
+                !mayRead(item.cls, deps.model, deps.isLocal)) {
+                return false;
+            }
+            continue;
+        }
+        if (deps.sourceMeta === undefined)
+            return false;
+        const source = await deps.sourceMeta(item.conversationId).catch(() => undefined);
+        if (source === undefined ||
+            source.internal === true ||
+            source.deleted === true ||
+            !audienceCovers(deps.meta, source) ||
+            !mayRead(item.cls, deps.model, deps.isLocal)) {
+            return false;
+        }
+    }
+    return true;
+}
 /** Search once per newest message and apply all currently readable stored blocks. */
 export async function applyRecall(messages, deps) {
     if (deps.internal)
         return undefined;
     const stored = new Map(deps.db.injections(deps.conversationId));
     const newest = messages.findLast((message) => message.role === "user");
-    if (newest !== undefined) {
+    if (newest !== undefined && !deps.skipTimestamps?.has(newest.timestamp)) {
         const key = messageKey(newest);
         if (!stored.has(key) && deps.autoRecall) {
             const hits = await deps.searcher.search(`${textOf(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`, {
@@ -69,7 +99,7 @@ export async function applyRecall(messages, deps) {
                     sharing: deps.meta.sharing,
                 },
                 model: deps.model,
-                excludeConversation: deps.conversationId,
+                inContext: deps.inContext,
                 includeJobs: false,
             }, 5);
             const cls = hits.some((hit) => hit.item.cls === "local-only") ? "local-only" : "normal";
@@ -81,42 +111,12 @@ export async function applyRecall(messages, deps) {
     }
     const readable = new Map();
     for (const [key, injection] of stored) {
-        let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.isLocal);
-        for (const itemId of injection.sources) {
-            const item = deps.db.item(itemId);
-            if (item === undefined) {
-                allowed = false;
-                break;
-            }
-            if (item.conversationId === null) {
-                // User-owned documents have no conversation; the owner is the audience.
-                if (!audienceCovers(deps.meta, { owner: item.owner ?? undefined }) ||
-                    !mayRead(item.cls, deps.model, deps.isLocal)) {
-                    allowed = false;
-                    break;
-                }
-                continue;
-            }
-            if (deps.sourceMeta === undefined) {
-                allowed = false;
-                break;
-            }
-            const source = await deps.sourceMeta(item.conversationId).catch(() => undefined);
-            if (source === undefined ||
-                source.internal === true ||
-                source.deleted === true ||
-                !audienceCovers(deps.meta, source) ||
-                !mayRead(item.cls, deps.model, deps.isLocal)) {
-                allowed = false;
-                break;
-            }
-        }
-        readable.set(key, allowed);
+        readable.set(key, await injectionReadable(injection, deps));
     }
     let changed = false;
     let appliedLocalOnly = false;
     const rebuilt = messages.map((message) => {
-        if (message.role !== "user")
+        if (message.role !== "user" || deps.skipTimestamps?.has(message.timestamp))
             return message;
         const injection = stored.get(messageKey(message));
         if (injection === undefined ||
