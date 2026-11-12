@@ -155,7 +155,7 @@ export declare class RecallDb {
     }>;
     /** Read a stored boundary decision. `undefined` = never decided. */
     decision(conversationId: number, entryId: number): boolean | undefined;
-    /** Store a boundary decision (negative decisions only per the plan). */
+    /** Stores a boundary decision; in practice callers record negatives, but the boolean round-trips. */
     putDecision(conversationId: number, entryId: number, boundary: boolean): void;
     /**
      * ONE transaction: positive decision + sitting row insert + previous line seal.

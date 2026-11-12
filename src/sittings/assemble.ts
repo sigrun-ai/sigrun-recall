@@ -1,0 +1,73 @@
+import type { Message, UserMessage } from "@earendil-works/pi-ai";
+
+import type { PreviousExchange } from "./types.js";
+
+export function previousExchange(
+  messages: readonly Message[],
+  beforeIndex: number,
+): PreviousExchange | undefined {
+  for (let userIndex = beforeIndex - 1; userIndex >= 0; userIndex -= 1) {
+    const candidate = messages[userIndex];
+    if (candidate?.role !== "user") continue;
+    for (let index = userIndex + 1; index < beforeIndex; index += 1) {
+      const answer = messages[index];
+      if (answer?.role !== "assistant") continue;
+      if (answer.stopReason !== "stop" && answer.stopReason !== "length") {
+        continue;
+      }
+      const text = answer.content.filter((part) => part.type === "text");
+      if (text.length === 0) continue;
+      return {
+        user: textOnlyUser(candidate),
+        assistant: { ...answer, content: text },
+      };
+    }
+  }
+  return undefined;
+}
+
+function textOnlyUser(message: UserMessage): UserMessage {
+  return {
+    ...message,
+    content:
+      typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : message.content.filter((part) => part.type === "text"),
+  };
+}
+
+export function assembleSitting(
+  messages: readonly Message[],
+  input: {
+    boundaryAt: number;
+    previous?: PreviousExchange;
+    blockText: string;
+  },
+): Message[] {
+  const kept = messages.filter(
+    (message) => message.role === "system" || message.timestamp >= input.boundaryAt,
+  );
+  const firstNonSystem = kept.findIndex((message) => message.role !== "system");
+  if (input.previous !== undefined) {
+    kept.splice(
+      firstNonSystem === -1 ? kept.length : firstNonSystem,
+      0,
+      input.previous.user,
+      input.previous.assistant,
+    );
+  }
+
+  const boundaryIndex = kept.findIndex(
+    (message) => message.role === "user" && message.timestamp >= input.boundaryAt,
+  );
+  const boundary = kept[boundaryIndex];
+  if (boundary?.role === "user") {
+    const block = { type: "text" as const, text: input.blockText };
+    const content: UserMessage["content"] =
+      typeof boundary.content === "string"
+        ? [block, { type: "text", text: boundary.content }]
+        : [block, ...boundary.content];
+    kept[boundaryIndex] = { ...boundary, content };
+  }
+  return kept;
+}

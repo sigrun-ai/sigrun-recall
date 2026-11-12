@@ -736,7 +736,7 @@ export class RecallDb {
             .get(conversationId, entryId);
         return row === undefined ? undefined : row.boundary === 1;
     }
-    /** Store a boundary decision (negative decisions only per the plan). */
+    /** Stores a boundary decision; in practice callers record negatives, but the boolean round-trips. */
     putDecision(conversationId, entryId, boundary) {
         this.db
             .prepare(`INSERT INTO sitting_decisions (conversationId, entryId, boundary) VALUES (?, ?, ?)
