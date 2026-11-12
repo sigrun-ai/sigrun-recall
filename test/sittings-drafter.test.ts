@@ -1,4 +1,4 @@
-import type { ConversationId, EntryRecord } from "@earendil-works/pi-durable";
+import type { ConversationId, Cursor, EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
@@ -68,6 +68,11 @@ function entry(
 interface FakeHost {
   host: Pick<SigrunHost, "conversations" | "models">;
   calls: { role?: string; systemPrompt?: string; prompt: string; timeoutMs?: number }[];
+  entryReads: {
+    query: { minEntryId?: number; order: "ascending" | "descending" };
+    limit: number;
+    cursor?: Cursor;
+  }[];
 }
 
 function fakeHost(
@@ -76,10 +81,38 @@ function fakeHost(
   respond?: (prompt: string) => string,
 ): FakeHost {
   const calls: FakeHost["calls"] = [];
+  const entryReads: FakeHost["entryReads"] = [];
   const host = {
     conversations: {
       meta: async () => meta as SessionMeta,
-      entries: async () => ({ items: entries, next: undefined }),
+      entries: async (
+        _id: ConversationId,
+        query: { minEntryId?: number; order: "ascending" | "descending" },
+        limit: number,
+        cursor?: Cursor,
+      ) => {
+        entryReads.push({
+          query: Object.fromEntries(
+            Object.entries(query).filter(([, value]) => value !== undefined),
+          ) as FakeHost["entryReads"][number]["query"],
+          limit,
+          cursor,
+        });
+        const offset = cursor === undefined ? 0 : Number(cursor);
+        const filtered = entries.filter(
+          (candidate) =>
+            query.minEntryId === undefined || candidate.id >= query.minEntryId,
+        );
+        const ordered = query.order === "descending"
+          ? [...filtered].reverse()
+          : filtered;
+        const items = ordered.slice(offset, offset + limit);
+        const nextOffset = offset + items.length;
+        return {
+          items,
+          next: nextOffset < ordered.length ? nextOffset : undefined,
+        };
+      },
     },
     models: {
       complete: async (input: { role?: string; systemPrompt?: string; prompt: string; timeoutMs?: number }) => {
@@ -88,7 +121,7 @@ function fakeHost(
       },
     },
   } as unknown as FakeHost["host"];
-  return { host, calls };
+  return { host, calls, entryReads };
 }
 
 function sitting(overrides: Partial<SittingRow> = {}): SittingRow {
@@ -377,6 +410,155 @@ describe("sitting drafter", () => {
     expect(
       fake.calls.find((call) => call.systemPrompt === MONTH_PROMPT),
     ).toBeUndefined();
+  });
+
+  it("a failed month completion writes nothing and the next wake retries", async () => {
+    const db = memoryDb();
+    db.putSitting(sitting({ startEntryId: 90, startAt: T0 }));
+    db.putLineDraft({
+      conversationId: 1,
+      startEntryId: 90,
+      text: "Open line.",
+      cls: "normal",
+      coversThrough: 4,
+    });
+    let id = 10;
+    for (let index = 0; index < 40; index += 1) {
+      db.putSitting(
+        sitting({
+          startEntryId: id,
+          startAt: DEC + index * 3_600_000,
+          boundary: true,
+          title: `Sitting ${index}`,
+        }),
+      );
+      db.sealLine(1, id, {
+        text: `Sitting ${index}: ${"a fair amount of detail ".repeat(6)}`,
+        cls: "normal",
+        coversThrough: id + 1,
+      });
+      id += 2;
+    }
+
+    const fake = fakeHost({}, basicEntries, () => "December in one line.");
+    const originalComplete = fake.host.models.complete;
+    let failMonth = true;
+    fake.host.models.complete = async (input) => {
+      if (input.systemPrompt === MONTH_PROMPT && failMonth) {
+        throw new Error("month model unavailable");
+      }
+      return originalComplete(input);
+    };
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+    expect(db.monthLines([1])).toHaveLength(0);
+
+    failMonth = false;
+    await worker.run({ abortSignal: undefined }, idleWake());
+    expect(db.monthLines([1])).toHaveLength(1);
+    expect(db.monthLines([1])[0]).toMatchObject({
+      month: "2025-12",
+      text: "December in one line.",
+      cls: "normal",
+    });
+  });
+
+  it("stops collapsing when a month line does not reduce the table bytes", async () => {
+    const db = memoryDb();
+    db.putSitting(sitting({ startEntryId: 90, startAt: T0 }));
+    db.putLineDraft({
+      conversationId: 1,
+      startEntryId: 90,
+      text: "Open line.",
+      cls: "normal",
+      coversThrough: 4,
+    });
+    let id = 10;
+    for (const [monthIndex, month] of ["2025-11", "2025-12"].entries()) {
+      const start = Date.UTC(2025, 10 + monthIndex, 1);
+      for (let index = 0; index < 40; index += 1) {
+        db.putSitting(
+          sitting({
+            startEntryId: id,
+            startAt: start + index * 3_600_000,
+            boundary: true,
+            title: `${month} sitting ${index}`,
+          }),
+        );
+        db.sealLine(1, id, {
+          text: `${month} sitting ${index}: ${"a fair amount of detail ".repeat(6)}`,
+          cls: "normal",
+          coversThrough: id + 1,
+        });
+        id += 2;
+      }
+    }
+
+    const fake = fakeHost({}, basicEntries, () => "x".repeat(20_000));
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+
+    expect(db.monthLines([1])).toHaveLength(1);
+    expect(db.monthLines([1])[0]!.month).toBe("2025-11");
+    expect(
+      fake.calls.filter((call) => call.systemPrompt === MONTH_PROMPT),
+    ).toHaveLength(1);
+  });
+
+  it("reads the latest entry and only the newest sitting range", async () => {
+    const db = memoryDb();
+    db.putSitting(sitting({ startEntryId: 3, startAt: T0 + 2000 }));
+    const fake = fakeHost({}, basicEntries);
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+
+    expect(fake.entryReads).toEqual([
+      {
+        query: { order: "descending" },
+        limit: 1,
+        cursor: undefined,
+      },
+      {
+        query: { order: "ascending", minEntryId: 3 },
+        limit: 200,
+        cursor: undefined,
+      },
+    ]);
+    expect(db.lines([1])[0]).toMatchObject({
+      startEntryId: 3,
+      coversThrough: 4,
+    });
+    expect(db.sittings([1])).toHaveLength(1);
+  });
+
+  it("reads one ascending page to establish the first sitting", async () => {
+    const db = memoryDb();
+    const fake = fakeHost({}, basicEntries);
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+
+    expect(fake.entryReads).toEqual([
+      {
+        query: { order: "descending" },
+        limit: 1,
+        cursor: undefined,
+      },
+      {
+        query: { order: "ascending" },
+        limit: 200,
+        cursor: undefined,
+      },
+      {
+        query: { order: "ascending", minEntryId: 1 },
+        limit: 200,
+        cursor: undefined,
+      },
+    ]);
+    expect(db.sittings([1])).toHaveLength(1);
   });
 
   it("a small table never collapses", async () => {

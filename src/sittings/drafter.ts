@@ -1,6 +1,7 @@
 import type {
 	ConversationId,
 	Cursor,
+	EntryId,
 	EntryRecord,
 	Page,
 } from "@earendil-works/pi-durable";
@@ -67,21 +68,23 @@ function sittingPrompt(
 	return prompt;
 }
 
-async function readAllEntries(
+async function readEntries(
 	host: Pick<SigrunHost, "conversations">,
 	conversationId: number,
+	query: { minEntryId?: number; order: "ascending" | "descending" },
+	limit: number,
 ): Promise<EntryRecord[]> {
 	const all: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
 	do {
 		const page: Page<EntryRecord, Cursor> = await host.conversations.entries(
 			conversationId as ConversationId,
-			{ order: "ascending" },
-			PAGE_SIZE,
+			{ ...query, minEntryId: query.minEntryId as EntryId | undefined },
+			limit,
 			cursor,
 		);
 		all.push(...page.items);
-		cursor = page.next;
+		cursor = all.length >= limit ? undefined : page.next;
 	} while (cursor !== undefined);
 	return all;
 }
@@ -114,14 +117,28 @@ export function createSittingDrafter(deps: DrafterDeps): ExtensionWorker {
 			if (meta.owner !== undefined && !(await deps.userEnabled(meta.owner))) {
 				return;
 			}
-			const entries = await readAllEntries(deps.host, conversationId);
-			const own = entries.filter((entry) => entry.conversationId === conversationId);
-			const firstUser = own.find(isUserInput);
-			if (firstUser === undefined) return;
+			const [latest] = await readEntries(
+				deps.host,
+				conversationId,
+				{ order: "descending" },
+				1,
+			);
+			if (latest === undefined) return;
+			const latestEntryId = latest.id;
 			const db = deps.db();
-			const latestEntryId = own.at(-1)?.id ?? firstUser.id;
-
-			db.putSitting(firstSitting(conversationId, firstUser));
+			if (db.sittings([conversationId]).length === 0) {
+				const firstPage = await readEntries(
+					deps.host,
+					conversationId,
+					{ order: "ascending" },
+					PAGE_SIZE,
+				);
+				const firstUser = firstPage.find(
+					(entry) => entry.conversationId === conversationId && isUserInput(entry),
+				);
+				if (firstUser === undefined) return;
+				db.putSitting(firstSitting(conversationId, firstUser));
+			}
 
 			const sittings = db.sittings([conversationId]);
 			const newest = sittings.at(-1);
@@ -134,7 +151,13 @@ export function createSittingDrafter(deps: DrafterDeps): ExtensionWorker {
 					(line === undefined || !line.sealed) &&
 					(line?.coversThrough ?? 0) < latestEntryId
 				) {
-					await draftLine(db, deps, newest, line, entries, latestEntryId);
+					const entries = await readEntries(
+						deps.host,
+						conversationId,
+						{ order: "ascending", minEntryId: newest.startEntryId },
+						PAGE_SIZE,
+					);
+					await draftLine(db, deps, newest, entries, latestEntryId);
 				}
 			}
 			await collapseMonths(db, deps, conversationId);
@@ -146,7 +169,6 @@ async function draftLine(
 	db: RecallDb,
 	deps: DrafterDeps,
 	open: SittingRow,
-	line: LineRow | undefined,
 	entries: readonly EntryRecord[],
 	latestEntryId: number,
 ): Promise<void> {
@@ -198,7 +220,8 @@ async function collapseMonths(
 		const lines = db.lines([conversationId]);
 		const months = db.monthLines([conversationId]);
 		const toc = tocSnapshot(lines, months, sittings);
-		if (tocBytes(toc) <= TOC_BUDGET_BYTES) return;
+		const previousBytes = tocBytes(toc);
+		if (previousBytes <= TOC_BUDGET_BYTES) return;
 		const collapsed = new Set(months.map((row) => row.month));
 		const byMonth = new Map<string, { line: LineRow; sitting: SittingRow }[]>();
 		for (const line of lines) {
@@ -228,6 +251,7 @@ async function collapseMonths(
 					.map(({ sitting }) => sitting.title ?? fallbackLine(sitting.boundaryText))
 					.join("; "),
 			});
+			if (currentBytes(db, conversationId) >= previousBytes) return;
 			continue;
 		}
 		let text: string;
@@ -243,8 +267,21 @@ async function collapseMonths(
 				text = group.map(({ line }) => line.text).join("; ");
 			}
 		} catch {
-			text = group.map(({ line }) => line.text).join("; ");
+			// A month line is irreversible: leave it unwritten and retry on
+			// the next wake instead of persisting an unreviewed join.
+			return;
 		}
 		db.putMonthLine({ conversationId, month, cls: "normal", text });
+		if (currentBytes(db, conversationId) >= previousBytes) return;
 	}
+}
+
+function currentBytes(db: RecallDb, conversationId: number): number {
+	return tocBytes(
+		tocSnapshot(
+			db.lines([conversationId]),
+			db.monthLines([conversationId]),
+			db.sittings([conversationId]),
+		),
+	);
 }

@@ -1,3 +1,8 @@
+/**
+ * Table-of-contents rendering and sealing. A line sealed after its month's
+ * month line was written is folded into that month entry and never appears
+ * individually.
+ */
 import type { Confidentiality } from "../db.js";
 import type { LineRow, MonthLineRow, SittingRow, TocEntry } from "./types.js";
 export declare const TOC_BUDGET_BYTES = 3072;

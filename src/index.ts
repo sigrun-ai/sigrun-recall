@@ -451,7 +451,92 @@ export default async function createRecall(
 	}
 
 	const extension = {
-		name: "@sigrun/recall",
+			name: "@sigrun/recall",
+			hooks: [
+				hook(ToolTask, {
+					afterTool: async (call, result, api) => {
+						// pi-durable 1.5.0 (spec §3.2-b): the harness runs afterTool
+						// on results IT wrote for calls that never executed —
+						// nothing to externalize from a call that never ran.
+						if (!toolExecuted(result)) return undefined;
+						try {
+							const meta = await host.conversations.meta(api.conversationId);
+							if (meta.internal === true) return undefined;
+							const live = await settings.get();
+							return externalize(result, call, {
+								store: artifactStore(),
+								thresholdBytes: live.externalizeBytes,
+								conversationId: api.conversationId,
+								owner: meta.owner ?? null,
+								now: (deps.now ?? Date.now)(),
+							});
+						} catch (error) {
+							console.error("recall: tool-result externalization failed", error);
+							return undefined;
+						}
+					},
+				}),
+				hook(GenerationTask, {
+					beforeRequest: async (request, api, context) => {
+						try {
+							const liveMeta = await host.conversations.meta(api.conversationId);
+							const prefs =
+								liveMeta.owner === undefined
+									? DEFAULT_USER_SETTINGS
+									: await userSettings(liveMeta.owner);
+							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+							const ownLineage = () => [{
+								conversationId: api.conversationId,
+								throughEntryId: Number.POSITIVE_INFINITY,
+								throughAt: Number.POSITIVE_INFINITY,
+							}];
+							const lineage =
+								liveMeta.internal === true || liveMeta.jobId !== undefined || !prefs.autoRecall
+									? ownLineage()
+									: await loadLineage(api.conversationId, (query, limit, cursor) =>
+										api.entries(
+											{
+												...query,
+												minEntryId: query.minEntryId as EntryId | undefined,
+												maxEntryId: query.maxEntryId as EntryId | undefined,
+											},
+											limit,
+											cursor as Cursor | undefined,
+											context,
+										),
+										{ memo: lineageMemo },
+									);
+							const messages = await applyRecall(request.messages, {
+								conversationId: api.conversationId,
+								db: db(),
+								searcher: getServices().searcher,
+								meta: liveMeta,
+								model: modelRef(agent?.model),
+								autoRecall: prefs.autoRecall,
+								internal: liveMeta.internal === true,
+								inContext: { lineage },
+								isLocal,
+								sourceMeta: (id) => meta(id),
+							});
+							return messages === undefined ? undefined : { messages };
+						} catch (error) {
+							console.error("recall: automatic recall failed", error);
+							return undefined;
+						}
+					},
+				}),
+			],
+			get tools() {
+				return getServices().tools;
+			},
+			get tasks() {
+				return [createBackfillTask(backfillDeps)];
+			},
+	};
+
+	return {
+		title: "Recall",
+		extension: defineExtension(extension),
 		workers: [
 			createSittingDrafter({
 				db,
@@ -460,91 +545,6 @@ export default async function createRecall(
 				now: deps.now ?? Date.now,
 			}),
 		],
-		hooks: [
-			hook(ToolTask, {
-				afterTool: async (call, result, api) => {
-					// pi-durable 1.5.0 (spec §3.2-b): the harness runs afterTool
-					// on results IT wrote for calls that never executed —
-					// nothing to externalize from a call that never ran.
-					if (!toolExecuted(result)) return undefined;
-					try {
-						const meta = await host.conversations.meta(api.conversationId);
-						if (meta.internal === true) return undefined;
-						const live = await settings.get();
-						return externalize(result, call, {
-							store: artifactStore(),
-							thresholdBytes: live.externalizeBytes,
-							conversationId: api.conversationId,
-							owner: meta.owner ?? null,
-							now: (deps.now ?? Date.now)(),
-						});
-					} catch (error) {
-						console.error("recall: tool-result externalization failed", error);
-						return undefined;
-					}
-				},
-			}),
-			hook(GenerationTask, {
-				beforeRequest: async (request, api, context) => {
-					try {
-						const liveMeta = await host.conversations.meta(api.conversationId);
-						const prefs =
-							liveMeta.owner === undefined
-								? DEFAULT_USER_SETTINGS
-								: await userSettings(liveMeta.owner);
-						const agent = await api.snapshot(AgentDoc, api.conversationId, context);
-						const ownLineage = () => [{
-							conversationId: api.conversationId,
-							throughEntryId: Number.POSITIVE_INFINITY,
-							throughAt: Number.POSITIVE_INFINITY,
-						}];
-						const lineage =
-							liveMeta.internal === true || liveMeta.jobId !== undefined || !prefs.autoRecall
-								? ownLineage()
-								: await loadLineage(api.conversationId, (query, limit, cursor) =>
-									api.entries(
-										{
-											...query,
-											minEntryId: query.minEntryId as EntryId | undefined,
-											maxEntryId: query.maxEntryId as EntryId | undefined,
-										},
-										limit,
-										cursor as Cursor | undefined,
-										context,
-									),
-									{ memo: lineageMemo },
-								);
-						const messages = await applyRecall(request.messages, {
-							conversationId: api.conversationId,
-							db: db(),
-							searcher: getServices().searcher,
-							meta: liveMeta,
-							model: modelRef(agent?.model),
-							autoRecall: prefs.autoRecall,
-							internal: liveMeta.internal === true,
-							inContext: { lineage },
-							isLocal,
-							sourceMeta: (id) => meta(id),
-						});
-						return messages === undefined ? undefined : { messages };
-					} catch (error) {
-						console.error("recall: automatic recall failed", error);
-						return undefined;
-					}
-				},
-			}),
-		],
-		get tools() {
-			return getServices().tools;
-		},
-		get tasks() {
-			return [createBackfillTask(backfillDeps)];
-		},
-	};
-
-	return {
-		title: "Recall",
-		extension: defineExtension(extension),
 		publishedHooks: createPublishedHooks({
 			db,
 			searcher: () => getServices().searcher,

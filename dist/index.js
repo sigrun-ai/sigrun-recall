@@ -362,14 +362,6 @@ export default async function createRecall(host, deps = {}) {
     }
     const extension = {
         name: "@sigrun/recall",
-        workers: [
-            createSittingDrafter({
-                db,
-                host,
-                userEnabled: async (user) => (await userSettings(user)).sittings,
-                now: deps.now ?? Date.now,
-            }),
-        ],
         hooks: [
             hook(ToolTask, {
                 afterTool: async (call, result, api) => {
@@ -448,6 +440,14 @@ export default async function createRecall(host, deps = {}) {
     return {
         title: "Recall",
         extension: defineExtension(extension),
+        workers: [
+            createSittingDrafter({
+                db,
+                host,
+                userEnabled: async (user) => (await userSettings(user)).sittings,
+                now: deps.now ?? Date.now,
+            }),
+        ],
         publishedHooks: createPublishedHooks({
             db,
             searcher: () => getServices().searcher,

@@ -63,6 +63,7 @@ describe("createRecall", () => {
       result.extension?.tasks?.map((task) => task.definition.name),
     ).toEqual(["recall.backfill"]);
     expect(result.extension?.hooks).toHaveLength(2);
+    expect(result.workers?.map((worker) => worker.name)).toEqual(["sittings"]);
     expect(
       result.routes?.map((route) => `${route.method} ${route.path}`),
     ).toEqual(["GET search", "POST backfill"]);
