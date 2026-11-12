@@ -23,7 +23,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Automatic recall in a fork no longer re-injects the fork's own inherited
   history: material already in context is excluded. Pre-boundary material from
   the conversation and its ancestors remains recallable.
-
 - Embedding models are now resolved per owner. The existing backfill vectors
   step enumerates item owners, embeds each owner's pending items with their
   effective model (and ownerless items with the system default), and prunes

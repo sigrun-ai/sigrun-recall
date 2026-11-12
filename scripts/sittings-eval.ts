@@ -9,6 +9,9 @@ import { convertChain, readHermes } from "./hermes-convert.ts";
  * request. The empty block is deliberate: these numbers measure the shape
  * change (dropped pre-boundary turns plus the previous exchange), not the bytes
  * of the real generated table of contents and recall block.
+ *
+ * Direct `node --experimental-strip-types` execution relies on the imported
+ * modules' relative imports staying type-only.
  */
 export function measureSittings(
 	messages: readonly Message[],
@@ -68,6 +71,7 @@ async function main(): Promise<void> {
 		}
 	}
 	messages.sort((a, b) => a.timestamp - b.timestamp);
+	// Default-settings baseline: no model-specific prompt-cache gap raise.
 	const result = measureSittings(messages, { minGapMs: 60 * 60_000, minHistoryTokens: 8_000 });
 	console.log(`returns: ${result.returns}`);
 	printSummary("without sittings", result.tokensWithout);
