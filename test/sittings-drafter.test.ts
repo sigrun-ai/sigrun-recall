@@ -56,10 +56,11 @@ function entry(
   id: number,
   kind: string,
   message?: Message,
+  conversationId = 1,
 ): EntryRecord {
   return {
     id,
-    conversationId: 1,
+    conversationId,
     kind,
     model: message === undefined ? undefined : [message],
   } as unknown as EntryRecord;
@@ -559,6 +560,64 @@ describe("sitting drafter", () => {
       },
     ]);
     expect(db.sittings([1])).toHaveLength(1);
+  });
+
+  it("pages past inherited entries to establish the first sitting", async () => {
+    const db = memoryDb();
+    const inherited = Array.from({ length: 200 }, (_, index) =>
+      entry(
+        index + 1,
+        "pi.user",
+        userMessage(`inherited ${index}`, T0 + index),
+        99,
+      ),
+    );
+    const entries = [
+      ...inherited,
+      entry(201, "pi.user", userMessage("first own question")),
+      entry(202, "pi.assistant", assistantMessage("first own answer")),
+    ];
+    const fake = fakeHost({}, entries);
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+
+    expect(db.sittings([1])).toHaveLength(1);
+    expect(db.sittings([1])[0]).toMatchObject({
+      startEntryId: 201,
+      boundaryText: "first own question",
+    });
+    expect(db.lines([1])[0]).toMatchObject({
+      startEntryId: 201,
+      coversThrough: 202,
+    });
+    expect(
+      fake.entryReads.filter((read) => read.query.order === "ascending"),
+    ).toHaveLength(3);
+  });
+
+  it("keeps drafting beyond one page until the prompt budget is full", async () => {
+    const db = memoryDb();
+    db.putSitting(sitting({ startEntryId: 1 }));
+    const entries = Array.from({ length: 201 }, (_, index) =>
+      entry(
+        index + 1,
+        index % 2 === 0 ? "pi.user" : "pi.assistant",
+        userMessage(`entry ${index + 1}: detail`),
+      ),
+    );
+    const fake = fakeHost({}, entries);
+    const worker = createSittingDrafter(deps(db, fake));
+
+    await worker.run({ abortSignal: undefined }, idleWake());
+
+    expect(fake.entryReads).toContainEqual({
+      query: { order: "ascending", minEntryId: 1 },
+      limit: 200,
+      cursor: 200,
+    });
+    expect(fake.calls[0]!.prompt).toContain("entry 201");
+    expect(db.lines([1])[0]).toMatchObject({ coversThrough: 201 });
   });
 
   it("a small table never collapses", async () => {

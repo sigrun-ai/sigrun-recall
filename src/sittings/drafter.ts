@@ -21,6 +21,7 @@ const PAGE_SIZE = 200;
 const PROMPT_CHAR_BUDGET = 6000;
 const COMPLETE_TIMEOUT_MS = 60_000;
 const MAX_COLLAPSES = 100;
+const MAX_FIRST_USER_PAGES = 20;
 
 export interface DrafterDeps {
 	db: () => RecallDb;
@@ -68,25 +69,52 @@ function sittingPrompt(
 	return prompt;
 }
 
+async function readPage(
+	host: Pick<SigrunHost, "conversations">,
+	conversationId: number,
+	query: { minEntryId?: number; order: "ascending" | "descending" },
+	limit: number,
+	cursor?: Cursor,
+): Promise<Page<EntryRecord, Cursor>> {
+	return host.conversations.entries(
+		conversationId as ConversationId,
+		{ ...query, minEntryId: query.minEntryId as EntryId | undefined },
+		limit,
+		cursor,
+	);
+}
+
 async function readEntries(
 	host: Pick<SigrunHost, "conversations">,
 	conversationId: number,
 	query: { minEntryId?: number; order: "ascending" | "descending" },
 	limit: number,
 ): Promise<EntryRecord[]> {
-	const all: EntryRecord[] = [];
+	const page = await readPage(host, conversationId, query, limit);
+	return [...page.items];
+}
+
+async function readFirstUser(
+	host: Pick<SigrunHost, "conversations">,
+	conversationId: number,
+): Promise<EntryRecord | undefined> {
 	let cursor: Cursor | undefined;
-	do {
-		const page: Page<EntryRecord, Cursor> = await host.conversations.entries(
-			conversationId as ConversationId,
-			{ ...query, minEntryId: query.minEntryId as EntryId | undefined },
-			limit,
+	for (let pageNumber = 0; pageNumber < MAX_FIRST_USER_PAGES; pageNumber += 1) {
+		const page = await readPage(
+			host,
+			conversationId,
+			{ order: "ascending" },
+			PAGE_SIZE,
 			cursor,
 		);
-		all.push(...page.items);
-		cursor = all.length >= limit ? undefined : page.next;
-	} while (cursor !== undefined);
-	return all;
+		const firstUser = page.items.find(
+			(entry) => entry.conversationId === conversationId && isUserInput(entry),
+		);
+		if (firstUser !== undefined) return firstUser;
+		if (page.next === undefined) return undefined;
+		cursor = page.next;
+	}
+	return undefined;
 }
 
 function firstSitting(conversationId: number, entry: EntryRecord): SittingRow {
@@ -101,6 +129,37 @@ function firstSitting(conversationId: number, entry: EntryRecord): SittingRow {
 		title: null,
 		titleState: "none",
 	};
+}
+
+/** Read only the entries the bounded drafting prompt can actually use. */
+async function readDraftEntries(
+	host: Pick<SigrunHost, "conversations">,
+	conversationId: number,
+	startEntryId: number,
+): Promise<EntryRecord[]> {
+	const all: EntryRecord[] = [];
+	let promptBytes = 0;
+	let cursor: Cursor | undefined;
+	do {
+		const page = await readPage(
+			host,
+			conversationId,
+			{ order: "ascending", minEntryId: startEntryId },
+			PAGE_SIZE,
+			cursor,
+		);
+		for (const entry of page.items) {
+			all.push(entry);
+			if (!isUserInput(entry) && !isAssistant(entry)) continue;
+			const text = messageText(entry.model?.[0]);
+			if (text.length === 0) continue;
+			const role = isUserInput(entry) ? "User" : "Assistant";
+			promptBytes += Buffer.byteLength(`${role}: ${text}\n`);
+			if (promptBytes > PROMPT_CHAR_BUDGET) return all;
+		}
+		cursor = page.next;
+	} while (cursor !== undefined);
+	return all;
 }
 
 export function createSittingDrafter(deps: DrafterDeps): ExtensionWorker {
@@ -127,15 +186,7 @@ export function createSittingDrafter(deps: DrafterDeps): ExtensionWorker {
 			const latestEntryId = latest.id;
 			const db = deps.db();
 			if (db.sittings([conversationId]).length === 0) {
-				const firstPage = await readEntries(
-					deps.host,
-					conversationId,
-					{ order: "ascending" },
-					PAGE_SIZE,
-				);
-				const firstUser = firstPage.find(
-					(entry) => entry.conversationId === conversationId && isUserInput(entry),
-				);
+				const firstUser = await readFirstUser(deps.host, conversationId);
 				if (firstUser === undefined) return;
 				db.putSitting(firstSitting(conversationId, firstUser));
 			}
@@ -151,13 +202,18 @@ export function createSittingDrafter(deps: DrafterDeps): ExtensionWorker {
 					(line === undefined || !line.sealed) &&
 					(line?.coversThrough ?? 0) < latestEntryId
 				) {
-					const entries = await readEntries(
+					const entries = await readDraftEntries(
 						deps.host,
 						conversationId,
-						{ order: "ascending", minEntryId: newest.startEntryId },
-						PAGE_SIZE,
+						newest.startEntryId,
 					);
-					await draftLine(db, deps, newest, entries, latestEntryId);
+					await draftLine(
+						db,
+						deps,
+						newest,
+						entries,
+						entries.at(-1)?.id ?? latestEntryId,
+					);
 				}
 			}
 			await collapseMonths(db, deps, conversationId);
