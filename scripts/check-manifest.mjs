@@ -81,7 +81,7 @@ const HOST_MODULE_PINS = {
 	typebox: "1.3.27",
 	// Every shared line since runtime value imports landed, through the
 	// shared version bundled by the minimum supported core.
-	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0",
+	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0 || 0.16.0",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
