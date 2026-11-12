@@ -20,7 +20,13 @@ export interface InContextRule {
         at: number;
     };
 }
+export type LineageMemo = Map<number, Promise<LineageLink[]>>;
+export declare function createLineageMemo(): LineageMemo;
+export interface LoadLineageOptions {
+    memo?: LineageMemo;
+    pageSize?: number;
+}
 /** Derive each inherited conversation's fork point from the raw entries. */
-export declare function loadLineage(conversationId: number, read: EntriesReader): Promise<LineageLink[]>;
+export declare function loadLineage(conversationId: number, read: EntriesReader, options?: LoadLineageOptions): Promise<LineageLink[]>;
 /** Whether an indexed item is already visible in the request's model context. */
 export declare function inContext(item: ItemRow, rule: InContextRule): boolean;

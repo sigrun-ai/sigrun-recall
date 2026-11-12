@@ -27,19 +27,31 @@ export interface InContextRule {
 	boundary?: { entryId: number; at: number };
 }
 
-const PAGE_SIZE = 200;
-const lineages = new Map<number, Promise<LineageLink[]>>();
+const DEFAULT_PAGE_SIZE = 200;
+
+export type LineageMemo = Map<number, Promise<LineageLink[]>>;
+
+export function createLineageMemo(): LineageMemo {
+	return new Map();
+}
+
+export interface LoadLineageOptions {
+	memo?: LineageMemo;
+	pageSize?: number;
+}
 
 /** Derive each inherited conversation's fork point from the raw entries. */
 export async function loadLineage(
 	conversationId: number,
 	read: EntriesReader,
+	options: LoadLineageOptions = {},
 ): Promise<LineageLink[]> {
-	let lineage = lineages.get(conversationId);
+	const memo = options.memo ?? createLineageMemo();
+	let lineage = memo.get(conversationId);
 	if (lineage === undefined) {
-		lineage = readLineage(conversationId, read);
-		lineages.set(conversationId, lineage);
-		lineage.catch(() => lineages.delete(conversationId));
+		lineage = readLineage(conversationId, read, options.pageSize ?? DEFAULT_PAGE_SIZE);
+		memo.set(conversationId, lineage);
+		lineage.catch(() => memo.delete(conversationId));
 	}
 	return lineage;
 }
@@ -47,11 +59,12 @@ export async function loadLineage(
 async function readLineage(
 	conversationId: number,
 	read: EntriesReader,
+	pageSize: number,
 ): Promise<LineageLink[]> {
 	const inherited = new Map<number, LineageLink>();
 	let cursor: unknown;
 	do {
-		const page = await read({ order: "ascending" }, PAGE_SIZE, cursor);
+		const page = await read({ order: "ascending" }, pageSize, cursor);
 		for (const entry of page.items) {
 			if (entry.conversationId === conversationId) {
 				return [
@@ -63,9 +76,10 @@ async function readLineage(
 					},
 				];
 			}
+			const prior = inherited.get(entry.conversationId)?.throughAt ?? 0;
 			const throughAt = passagesOf(entry).reduce(
 				(latest, passage) => Math.max(latest, passage.at),
-				0,
+				prior,
 			);
 			inherited.set(entry.conversationId, {
 				conversationId: entry.conversationId,

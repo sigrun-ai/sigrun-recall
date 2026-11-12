@@ -1,21 +1,24 @@
 import { passagesOf } from "../passages.js";
-const PAGE_SIZE = 200;
-const lineages = new Map();
+const DEFAULT_PAGE_SIZE = 200;
+export function createLineageMemo() {
+    return new Map();
+}
 /** Derive each inherited conversation's fork point from the raw entries. */
-export async function loadLineage(conversationId, read) {
-    let lineage = lineages.get(conversationId);
+export async function loadLineage(conversationId, read, options = {}) {
+    const memo = options.memo ?? createLineageMemo();
+    let lineage = memo.get(conversationId);
     if (lineage === undefined) {
-        lineage = readLineage(conversationId, read);
-        lineages.set(conversationId, lineage);
-        lineage.catch(() => lineages.delete(conversationId));
+        lineage = readLineage(conversationId, read, options.pageSize ?? DEFAULT_PAGE_SIZE);
+        memo.set(conversationId, lineage);
+        lineage.catch(() => memo.delete(conversationId));
     }
     return lineage;
 }
-async function readLineage(conversationId, read) {
+async function readLineage(conversationId, read, pageSize) {
     const inherited = new Map();
     let cursor;
     do {
-        const page = await read({ order: "ascending" }, PAGE_SIZE, cursor);
+        const page = await read({ order: "ascending" }, pageSize, cursor);
         for (const entry of page.items) {
             if (entry.conversationId === conversationId) {
                 return [
@@ -27,7 +30,8 @@ async function readLineage(conversationId, read) {
                     },
                 ];
             }
-            const throughAt = passagesOf(entry).reduce((latest, passage) => Math.max(latest, passage.at), 0);
+            const prior = inherited.get(entry.conversationId)?.throughAt ?? 0;
+            const throughAt = passagesOf(entry).reduce((latest, passage) => Math.max(latest, passage.at), prior);
             inherited.set(entry.conversationId, {
                 conversationId: entry.conversationId,
                 throughEntryId: entry.id,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ItemRow } from "../src/db.js";
 import {
+  createLineageMemo,
   inContext,
   loadLineage,
   type EntriesReader,
@@ -83,16 +84,17 @@ function ownLink(conversationId: number) {
 }
 
 describe("conversation lineage", () => {
+  const memo = createLineageMemo();
   it("a non-fork has only its own link", async () => {
     const source = reader([
       entry(1, 3, 100),
       entry(2, 3, 200),
       entry(3, 3, 300),
     ]);
-    const result = await loadLineage(3, source.read);
+    const result = await loadLineage(3, source.read, { memo });
     expect(result).toEqual([ownLink(3)]);
     expect(source.calls).toBe(1);
-    const again = await loadLineage(3, source.read);
+    const again = await loadLineage(3, source.read, { memo });
     expect(again).toEqual([ownLink(3)]);
     expect(source.calls).toBe(1);
   });
@@ -106,7 +108,7 @@ describe("conversation lineage", () => {
       entry(21, 2, 2_100),
       entry(30, 4, 3_000),
     ]);
-    const result = await loadLineage(4, source.read);
+    const result = await loadLineage(4, source.read, { memo });
     expect(result).toEqual([
       { conversationId: 1, throughEntryId: 12, throughAt: 1_200 },
       { conversationId: 2, throughEntryId: 21, throughAt: 2_100 },
@@ -126,10 +128,64 @@ describe("conversation lineage", () => {
       queries.push(query.order);
       return source.read(query, limit, cursor);
     };
-    const first = await loadLineage(2, read);
-    const second = await loadLineage(2, read);
+    const first = await loadLineage(2, read, { memo });
+    const second = await loadLineage(2, read, { memo });
     expect(first).toBe(second);
     expect(queries).toEqual(["ascending"]);
+  });
+
+  it("a model-less fork-point entry preserves the ancestor's maximum message time", async () => {
+    const memo = createLineageMemo();
+    const source = reader([
+      entry(10, 1, 1_000),
+      { id: 11, conversationId: 1, kind: "pi.system" } as EntryRecord,
+      entry(20, 2, 2_000),
+    ]);
+    expect(await loadLineage(2, source.read, { memo })).toEqual([
+      { conversationId: 1, throughEntryId: 11, throughAt: 1_000 },
+      ownLink(2),
+    ]);
+    expect(
+      inContext(
+        item({ conversationId: 1, entryId: null, at: 1_000 }),
+        { lineage: await loadLineage(2, source.read, { memo }) },
+      ),
+    ).toBe(true);
+  });
+
+  it("pages 250 inherited entries and records both fork points", async () => {
+    const memo = createLineageMemo();
+    const entries = [
+      ...Array.from({ length: 150 }, (_, index) =>
+        entry(index + 1, 1, (index + 1) * 100),
+      ),
+      ...Array.from({ length: 100 }, (_, index) =>
+        entry(index + 151, 2, (index + 151) * 100),
+      ),
+      entry(251, 3, 25_100),
+    ];
+    const source = reader(entries);
+    const result = await loadLineage(3, source.read, { memo, pageSize: 100 });
+    expect(source.calls).toBeGreaterThan(1);
+    expect(result).toEqual([
+      { conversationId: 1, throughEntryId: 150, throughAt: 15_000 },
+      { conversationId: 2, throughEntryId: 250, throughAt: 25_000 },
+      ownLink(3),
+    ]);
+  });
+
+  it("a separate memo cannot return another test's cached lineage", async () => {
+    const first = reader([entry(1, 1, 100), entry(2, 3, 200)]);
+    const second = reader([entry(1, 2, 300), entry(2, 3, 400)]);
+    expect(await loadLineage(3, first.read, { memo: createLineageMemo() })).toEqual([
+      { conversationId: 1, throughEntryId: 1, throughAt: 100 },
+      ownLink(3),
+    ]);
+    expect(await loadLineage(3, second.read, { memo: createLineageMemo() })).toEqual([
+      { conversationId: 2, throughEntryId: 1, throughAt: 300 },
+      ownLink(3),
+    ]);
+    expect(second.calls).toBe(1);
   });
 });
 

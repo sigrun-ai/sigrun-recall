@@ -7,6 +7,7 @@ import {
 	hook,
 	ToolTask,
 	type ConversationId,
+	type Cursor,
 	type EntryId,
 } from "@earendil-works/pi-durable";
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
@@ -29,7 +30,7 @@ import {
 } from "./settings-schema.js";
 import { createTools } from "./tools.js";
 import { applyRecall } from "./inject.js";
-import { loadLineage } from "./sittings/lineage.js";
+import { createLineageMemo, loadLineage } from "./sittings/lineage.js";
 import {
 	createEmbeddingWarnings,
 	createSqliteVectorIndex,
@@ -137,6 +138,7 @@ export default async function createRecall(
 	): { provider: string; id: string } | undefined =>
 		model === undefined ? undefined : { provider: model.provider, id: model.modelId };
 	let database: RecallDb | undefined;
+	const lineageMemo = createLineageMemo();
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
 		tools: ReturnType<typeof createTools>;
@@ -482,18 +484,27 @@ export default async function createRecall(
 									? DEFAULT_USER_SETTINGS
 									: await userSettings(liveMeta.owner);
 							const agent = await api.snapshot(AgentDoc, api.conversationId, context);
-							const lineage = await loadLineage(api.conversationId, (query, limit, cursor) =>
-								api.entries(
-									{
-										...query,
-										minEntryId: query.minEntryId as EntryId | undefined,
-										maxEntryId: query.maxEntryId as EntryId | undefined,
-									},
-									limit,
-									cursor as never,
-									context,
-								),
-							);
+							const ownLineage = () => [{
+								conversationId: api.conversationId,
+								throughEntryId: Number.POSITIVE_INFINITY,
+								throughAt: Number.POSITIVE_INFINITY,
+							}];
+							const lineage =
+								liveMeta.internal === true || liveMeta.jobId !== undefined || !prefs.autoRecall
+									? ownLineage()
+									: await loadLineage(api.conversationId, (query, limit, cursor) =>
+										api.entries(
+											{
+												...query,
+												minEntryId: query.minEntryId as EntryId | undefined,
+												maxEntryId: query.maxEntryId as EntryId | undefined,
+											},
+											limit,
+											cursor as Cursor | undefined,
+											context,
+										),
+										{ memo: lineageMemo },
+									);
 							const messages = await applyRecall(request.messages, {
 								conversationId: api.conversationId,
 								db: db(),
