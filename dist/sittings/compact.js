@@ -47,6 +47,8 @@ function inSittingPrompt(entries, startEntryId) {
  * marker has a high id but a `head` pointing backward.
  */
 export async function beforeCompactSittings(compaction, deps) {
+    if (deps.db.sittings([deps.conversationId]).length === 0)
+        return undefined;
     const ownLineage = () => [{
             conversationId: deps.conversationId,
             throughEntryId: Number.POSITIVE_INFINITY,

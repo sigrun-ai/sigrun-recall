@@ -68,6 +68,7 @@ export async function beforeCompactSittings(
 	},
 	deps: CompactDeps,
 ): Promise<{ decline: true } | { summary: string } | undefined> {
+	if (deps.db.sittings([deps.conversationId]).length === 0) return undefined;
 	const ownLineage = (): LineageLink[] => [{
 		conversationId: deps.conversationId,
 		throughEntryId: Number.POSITIVE_INFINITY,

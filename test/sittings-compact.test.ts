@@ -152,6 +152,23 @@ describe("beforeCompactSittings", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	it("returns before reading lineage when no sittings exist", async () => {
+		const db = memoryDb();
+		let reads = 0;
+		const read: EntriesReader = async () => {
+			reads += 1;
+			throw new Error("lineage read should not happen");
+		};
+		const { complete, calls } = completeStub();
+		const result = await beforeCompactSittings(
+			{ reason: "threshold", entries: [turn(1, "one")], firstKept: 1 },
+			{ ...deps({ db, complete }), read },
+		);
+		expect(result).toBeUndefined();
+		expect(reads).toBe(0);
+		expect(calls).toHaveLength(0);
+	});
+
 	it("declines a threshold compaction before the boundary", async () => {
 		const db = memoryDb();
 		db.putSitting(boundarySitting(40));

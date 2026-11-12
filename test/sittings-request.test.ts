@@ -592,6 +592,30 @@ describe("applySittings", () => {
 		}
 	});
 
+	it("a tainted previous sitting keeps its fallback line local-only", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		db.setTaint(1, 2);
+		const result = await applySittings(messages, deps({
+			db,
+			read: reader(entries),
+			searcher: NO_HITS,
+		}));
+		expect(result.messages).toBeDefined();
+		expect(db.lines([1])).toEqual([{
+			conversationId: 1,
+			startEntryId: 1,
+			text: "old question",
+			cls: "local-only",
+			coversThrough: 2,
+			sealed: true,
+		}]);
+		expect(db.sittings([1]).find((row) => row.boundary)?.block?.toc[0]).toMatchObject({
+			text: "old question",
+			cls: "local-only",
+		});
+	});
+
 	it("the previous sitting's line is sealed at the boundary", async () => {
 		const { entries, messages } = fixture();
 		const db = memoryDb();

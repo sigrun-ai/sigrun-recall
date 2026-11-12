@@ -334,14 +334,24 @@ async function drawBoundary(
 	}
 	let seal: ReturnType<typeof sealArgs> | undefined;
 	if (previousSitting !== undefined) {
+		const previousLastEntryId = await findPreviousEntryId(
+			deps.conversationId,
+			deps.read,
+			entry.id,
+		);
+		const previousTaintFrom = deps.db.taintFrom(deps.conversationId);
+		const previousCls: Confidentiality =
+			previousTaintFrom !== undefined && previousTaintFrom <= previousLastEntryId
+				? "local-only"
+				: "normal";
 		const line = deps.db
 			.lines([deps.conversationId])
 			.find((candidate) => candidate.startEntryId === previousSitting.startEntryId);
 		seal = sealArgs(
 			previousSitting,
 			line,
-			await findPreviousEntryId(deps.conversationId, deps.read, entry.id),
-			cls,
+			previousLastEntryId,
+			previousCls,
 		);
 	}
 

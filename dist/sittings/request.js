@@ -233,10 +233,15 @@ async function drawBoundary(messages, newestIndex, entry, lineage, deps) {
     }
     let seal;
     if (previousSitting !== undefined) {
+        const previousLastEntryId = await findPreviousEntryId(deps.conversationId, deps.read, entry.id);
+        const previousTaintFrom = deps.db.taintFrom(deps.conversationId);
+        const previousCls = previousTaintFrom !== undefined && previousTaintFrom <= previousLastEntryId
+            ? "local-only"
+            : "normal";
         const line = deps.db
             .lines([deps.conversationId])
             .find((candidate) => candidate.startEntryId === previousSitting.startEntryId);
-        seal = sealArgs(previousSitting, line, await findPreviousEntryId(deps.conversationId, deps.read, entry.id), cls);
+        seal = sealArgs(previousSitting, line, previousLastEntryId, previousCls);
     }
     // The table of contents is taken AFTER the previous sitting's seal is
     // computed: the just-computed seal participates as a sealed line even
