@@ -29,9 +29,10 @@ import {
 	type UserRecallSettings,
 } from "./settings-schema.js";
 import { createTools } from "./tools.js";
-import { applyRecall } from "./inject.js";
+import { applyRecall, injectionReadable, type InjectDeps } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
-import { createLineageMemo, loadLineage } from "./sittings/lineage.js";
+import { gapMs } from "./sittings/boundary.js";
+import { applySittings } from "./sittings/request.js";
 import {
 	createEmbeddingWarnings,
 	createSqliteVectorIndex,
@@ -139,7 +140,6 @@ export default async function createRecall(
 	): { provider: string; id: string } | undefined =>
 		model === undefined ? undefined : { provider: model.provider, id: model.modelId };
 	let database: RecallDb | undefined;
-	const lineageMemo = createLineageMemo();
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
 		tools: ReturnType<typeof createTools>;
@@ -484,41 +484,69 @@ export default async function createRecall(
 							liveMeta.owner === undefined
 								? DEFAULT_USER_SETTINGS
 								: await userSettings(liveMeta.owner);
+						const live = await settings.get();
 						const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+						const model = modelRef(agent?.model);
+						const entriesReader = (query: {
+							minEntryId?: number;
+							maxEntryId?: number;
+							order: "ascending" | "descending";
+						}, limit: number, cursor: unknown) =>
+							api.entries(
+								{
+									...query,
+									minEntryId: query.minEntryId as EntryId | undefined,
+									maxEntryId: query.maxEntryId as EntryId | undefined,
+								},
+								limit,
+								cursor as Cursor | undefined,
+								context,
+							);
 						const ownLineage = () => [{
 							conversationId: api.conversationId,
 							throughEntryId: Number.POSITIVE_INFINITY,
 							throughAt: Number.POSITIVE_INFINITY,
 						}];
-						const lineage =
-							liveMeta.internal === true || liveMeta.jobId !== undefined || !prefs.autoRecall
-								? ownLineage()
-								: await loadLineage(api.conversationId, (query, limit, cursor) =>
-									api.entries(
-										{
-											...query,
-											minEntryId: query.minEntryId as EntryId | undefined,
-											maxEntryId: query.maxEntryId as EntryId | undefined,
-										},
-										limit,
-										cursor as Cursor | undefined,
-										context,
-									),
-									{ memo: lineageMemo },
-								);
-						const messages = await applyRecall(request.messages, {
+						const injectDeps: InjectDeps = {
 							conversationId: api.conversationId,
 							db: db(),
 							searcher: getServices().searcher,
 							meta: liveMeta,
-							model: modelRef(agent?.model),
+							model,
 							autoRecall: prefs.autoRecall,
 							internal: liveMeta.internal === true,
-							inContext: { lineage },
+							inContext: { lineage: ownLineage() },
 							isLocal,
 							sourceMeta: (id) => meta(id),
+						};
+						const result = await applySittings(request.messages, {
+							conversationId: api.conversationId,
+							db: db(),
+							meta: liveMeta,
+							enabled: prefs.sittings,
+							options: {
+								minGapMs: gapMs(
+									live.sittings.minGapMinutes,
+									model === undefined
+										? undefined
+										: api.models.getModel(model.provider, model.id),
+								),
+								minHistoryTokens: live.sittings.minHistoryTokens,
+							},
+							model,
+							isLocal,
+							read: entriesReader,
+							searcher: getServices().searcher,
+							readable: (injection) => injectionReadable(injection, injectDeps),
+							now: deps.now ?? Date.now,
 						});
-						return messages === undefined ? undefined : { messages };
+						const messages = await applyRecall(result.messages ?? request.messages, {
+							...injectDeps,
+							inContext: result.rule,
+							skipTimestamps: result.skipTimestamps,
+						});
+						if (messages === undefined && result.messages === undefined) return undefined;
+						return { messages: messages ?? result.messages! };
 					} catch (error) {
 						console.error("recall: automatic recall failed", error);
 						return undefined;

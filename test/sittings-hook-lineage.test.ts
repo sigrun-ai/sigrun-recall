@@ -43,16 +43,10 @@ describe("recall beforeRequest lineage adapter", () => {
         snapshot: async () => undefined,
         entries: async (...args: unknown[]) => {
           calls.push(args);
-          return {
-            items: [
-              {
-                id: 1,
-                conversationId: 1,
-                kind: "pi.message",
-                model: [{ role: "user", content: "question", timestamp: 1 }],
-              },
-            ] as unknown as EntryRecord[],
-          };
+          // Empty: the lineage resolves to the own-conversation link and
+          // the sittings step maps no user entry, so this pins the lineage
+          // adapter alone.
+          return { items: [] as EntryRecord[] };
         },
       };
       await beforeRequest(
@@ -61,8 +55,16 @@ describe("recall beforeRequest lineage adapter", () => {
         context as never,
       );
       expect(calls).toEqual([
+        // The sittings step loads the lineage (ascending), then maps the
+        // newest user message to its entry (descending).
         [
-          { order: "ascending" },
+          { order: "ascending", minEntryId: undefined, maxEntryId: undefined },
+          200,
+          undefined,
+          context,
+        ],
+        [
+          { order: "descending", minEntryId: undefined, maxEntryId: undefined },
           200,
           undefined,
           context,

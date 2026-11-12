@@ -12,9 +12,10 @@ import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
 import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createTools } from "./tools.js";
-import { applyRecall } from "./inject.js";
+import { applyRecall, injectionReadable } from "./inject.js";
 import { createSittingDrafter } from "./sittings/drafter.js";
-import { createLineageMemo, loadLineage } from "./sittings/lineage.js";
+import { gapMs } from "./sittings/boundary.js";
+import { applySittings } from "./sittings/request.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
 async function migrateLocalProviders(host) {
@@ -96,7 +97,6 @@ export default async function createRecall(host, deps = {}) {
     const isLocal = (model) => host.models.isLocal(model);
     const modelRef = (model) => model === undefined ? undefined : { provider: model.provider, id: model.modelId };
     let database;
-    const lineageMemo = createLineageMemo();
     let services;
     const pending = new Set();
     /**
@@ -396,32 +396,57 @@ export default async function createRecall(host, deps = {}) {
                         const prefs = liveMeta.owner === undefined
                             ? DEFAULT_USER_SETTINGS
                             : await userSettings(liveMeta.owner);
+                        const live = await settings.get();
                         const agent = await api.snapshot(AgentDoc, api.conversationId, context);
+                        const model = modelRef(agent?.model);
+                        const entriesReader = (query, limit, cursor) => api.entries({
+                            ...query,
+                            minEntryId: query.minEntryId,
+                            maxEntryId: query.maxEntryId,
+                        }, limit, cursor, context);
                         const ownLineage = () => [{
                                 conversationId: api.conversationId,
                                 throughEntryId: Number.POSITIVE_INFINITY,
                                 throughAt: Number.POSITIVE_INFINITY,
                             }];
-                        const lineage = liveMeta.internal === true || liveMeta.jobId !== undefined || !prefs.autoRecall
-                            ? ownLineage()
-                            : await loadLineage(api.conversationId, (query, limit, cursor) => api.entries({
-                                ...query,
-                                minEntryId: query.minEntryId,
-                                maxEntryId: query.maxEntryId,
-                            }, limit, cursor, context), { memo: lineageMemo });
-                        const messages = await applyRecall(request.messages, {
+                        const injectDeps = {
                             conversationId: api.conversationId,
                             db: db(),
                             searcher: getServices().searcher,
                             meta: liveMeta,
-                            model: modelRef(agent?.model),
+                            model,
                             autoRecall: prefs.autoRecall,
                             internal: liveMeta.internal === true,
-                            inContext: { lineage },
+                            inContext: { lineage: ownLineage() },
                             isLocal,
                             sourceMeta: (id) => meta(id),
+                        };
+                        const result = await applySittings(request.messages, {
+                            conversationId: api.conversationId,
+                            db: db(),
+                            meta: liveMeta,
+                            enabled: prefs.sittings,
+                            options: {
+                                minGapMs: gapMs(live.sittings.minGapMinutes, model === undefined
+                                    ? undefined
+                                    : api.models.getModel(model.provider, model.id)),
+                                minHistoryTokens: live.sittings.minHistoryTokens,
+                            },
+                            model,
+                            isLocal,
+                            read: entriesReader,
+                            searcher: getServices().searcher,
+                            readable: (injection) => injectionReadable(injection, injectDeps),
+                            now: deps.now ?? Date.now,
                         });
-                        return messages === undefined ? undefined : { messages };
+                        const messages = await applyRecall(result.messages ?? request.messages, {
+                            ...injectDeps,
+                            inContext: result.rule,
+                            skipTimestamps: result.skipTimestamps,
+                        });
+                        if (messages === undefined && result.messages === undefined)
+                            return undefined;
+                        return { messages: messages ?? result.messages };
                     }
                     catch (error) {
                         console.error("recall: automatic recall failed", error);
