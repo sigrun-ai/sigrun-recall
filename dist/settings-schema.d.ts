@@ -28,9 +28,14 @@ import { Type, type Static } from "typebox";
 export declare const DEFAULT_EXTERNALIZE_BYTES = 24576;
 export declare const RECALL_SETTINGS_SCHEMA: Type.TObject<{
     externalizeBytes: Type.TInteger;
+    sittings: Type.TObject<{
+        minGapMinutes: Type.TInteger;
+        minHistoryTokens: Type.TInteger;
+    }>;
 }> & Readonly<Record<string, unknown>>;
 export declare const RECALL_USER_SETTINGS_SCHEMA: Type.TObject<{
     autoRecall: Type.TBoolean;
+    sittings: Type.TBoolean;
 }> & Readonly<Record<string, unknown>>;
 export type RecallSettings = Static<typeof RECALL_SETTINGS_SCHEMA>;
 export type UserRecallSettings = Static<typeof RECALL_USER_SETTINGS_SCHEMA>;

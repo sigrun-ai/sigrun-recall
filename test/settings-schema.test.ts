@@ -21,8 +21,8 @@ import {
 import { createSettingsStub, type SettingsStub } from "./fake-host.js";
 
 /** The defaults the deleted parsers filled in, verbatim. */
-const DEFAULT_SHARED = { externalizeBytes: 24_576 };
-const DEFAULT_USER: UserRecallSettings = { autoRecall: true };
+const DEFAULT_SHARED = { externalizeBytes: 24_576, sittings: { minGapMinutes: 60, minHistoryTokens: 8000 } };
+const DEFAULT_USER: UserRecallSettings = { autoRecall: true, sittings: true };
 
 /**
  * Run the factory over a settings stub, hand the stub to `body`, then shut
@@ -96,6 +96,7 @@ describe("recall settings schema", () => {
 	test("the user schema no longer has localProviders", () => {
 		expect(Object.keys(RECALL_USER_SETTINGS_SCHEMA.properties ?? {})).toEqual([
 			"autoRecall",
+			"sittings",
 		]);
 		// Stored copies survive as unknown keys until the factory removes them.
 		expect(
@@ -103,7 +104,7 @@ describe("recall settings schema", () => {
 				autoRecall: false,
 				localProviders: ["acme-local"],
 			}).value,
-		).toEqual({ autoRecall: false, localProviders: ["acme-local"] });
+		).toEqual({ autoRecall: false, sittings: true, localProviders: ["acme-local"] });
 	});
 
 	test("defaults match the old parser", async () => {
@@ -129,8 +130,8 @@ describe("recall settings schema", () => {
 				},
 			},
 			async (stub, result) => {
-				expect(await stub.read()).toEqual({ externalizeBytes: 50 });
-				expect(await stub.readUser("alice")).toEqual({ autoRecall: false });
+				expect(await stub.read()).toEqual({ externalizeBytes: 50, sittings: { minGapMinutes: 60, minHistoryTokens: 8000 } });
+				expect(await stub.readUser("alice")).toEqual({ autoRecall: false, sittings: true });
 				expect(await stub.readUser("bob")).toEqual(DEFAULT_USER);
 
 				const replaced = await afterToolOf(result)({
@@ -150,7 +151,7 @@ describe("recall settings schema", () => {
 		}
 		expect(
 			checkStoredSettings(RECALL_SETTINGS_SCHEMA, { externalizeBytes: 1 }).value,
-		).toEqual({ externalizeBytes: 1 });
+		).toEqual({ externalizeBytes: 1, sittings: { minGapMinutes: 60, minHistoryTokens: 8000 } });
 
 		for (const autoRecall of ["yes", 1, 0, null, []]) {
 			expect(
@@ -159,7 +160,29 @@ describe("recall settings schema", () => {
 		}
 		expect(
 			checkStoredSettings(RECALL_USER_SETTINGS_SCHEMA, { autoRecall: false }).value,
-		).toEqual({ autoRecall: false });
+		).toEqual({ autoRecall: false, sittings: true });
+	});
+
+	test("sittings shared settings repair", () => {
+		// minGapMinutes: 0 repairs to the default 60 (below minimum).
+		expect(
+			checkStoredSettings(RECALL_SETTINGS_SCHEMA, { sittings: { minGapMinutes: 0 } }).value,
+		).toEqual({ externalizeBytes: 24_576, sittings: { minGapMinutes: 60, minHistoryTokens: 8000 } });
+		// Valid values survive.
+		expect(
+			checkStoredSettings(RECALL_SETTINGS_SCHEMA, { sittings: { minGapMinutes: 30, minHistoryTokens: 4000 } }).value,
+		).toEqual({ externalizeBytes: 24_576, sittings: { minGapMinutes: 30, minHistoryTokens: 4000 } });
+	});
+
+	test("sittings per-user repair", () => {
+		for (const sittings of ["yes", 1, 0, null, []]) {
+			expect(
+				checkStoredSettings(RECALL_USER_SETTINGS_SCHEMA, { sittings }).value,
+			).toEqual(DEFAULT_USER);
+		}
+		expect(
+			checkStoredSettings(RECALL_USER_SETTINGS_SCHEMA, { sittings: false }).value,
+		).toEqual({ autoRecall: true, sittings: false });
 	});
 
 	test("user settings stay per user", async () => {
@@ -173,8 +196,8 @@ describe("recall settings schema", () => {
 			async (stub) => {
 				const bobBefore = await stub.raw(stub.userPath("bob"));
 				await stub.saveUser("alice", { autoRecall: true });
-				expect(await stub.readUser("alice")).toEqual({ autoRecall: true });
-				expect(await stub.readUser("bob")).toEqual({ autoRecall: true });
+				expect(await stub.readUser("alice")).toEqual({ autoRecall: true, sittings: true });
+				expect(await stub.readUser("bob")).toEqual({ autoRecall: true, sittings: true });
 				expect(await stub.raw(stub.userPath("bob"))).toBe(bobBefore);
 			},
 		);
@@ -183,9 +206,11 @@ describe("recall settings schema", () => {
 	test("absent embedding group means no embeddings", async () => {
 		expect(Object.keys(RECALL_SETTINGS_SCHEMA.properties ?? {})).toEqual([
 			"externalizeBytes",
+			"sittings",
 		]);
 		expect(Object.keys(RECALL_USER_SETTINGS_SCHEMA.properties ?? {})).toEqual([
 			"autoRecall",
+			"sittings",
 		]);
 
 		const embedding = {
@@ -195,7 +220,7 @@ describe("recall settings schema", () => {
 			timeoutMs: 800,
 		};
 		await withRecall({ settings: { externalizeBytes: 512, embedding } }, async (stub) => {
-			expect(await stub.read()).toEqual({ externalizeBytes: 512, embedding });
+			expect(await stub.read()).toEqual({ externalizeBytes: 512, sittings: { minGapMinutes: 60, minHistoryTokens: 8000 }, embedding });
 			expect(await stub.rawSettings()).toEqual({ externalizeBytes: 512, embedding });
 		});
 	});

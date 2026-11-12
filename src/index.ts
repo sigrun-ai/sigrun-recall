@@ -359,7 +359,7 @@ export default async function createRecall(
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
-	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true };
+	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true, sittings: true };
 	/**
 	 * The per-user settings, defaulted and repaired by the declared handle.
 	 * A read failure keeps the directory user's defaults instead of losing

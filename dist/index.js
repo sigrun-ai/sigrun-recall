@@ -284,7 +284,7 @@ export default async function createRecall(host, deps = {}) {
     const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
-    const DEFAULT_USER_SETTINGS = { autoRecall: true };
+    const DEFAULT_USER_SETTINGS = { autoRecall: true, sittings: true };
     /**
      * The per-user settings, defaulted and repaired by the declared handle.
      * A read failure keeps the directory user's defaults instead of losing
