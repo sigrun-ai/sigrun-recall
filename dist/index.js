@@ -498,7 +498,10 @@ export default async function createRecall(host, deps = {}) {
             createSittingDrafter({
                 db,
                 host,
-                userEnabled: async (user) => (await userSettings(user)).sittings,
+                userEnabled: async (user) => {
+                    const prefs = await userSettings(user);
+                    return prefs.sittings && prefs.autoRecall;
+                },
                 now: deps.now ?? Date.now,
             }),
         ],

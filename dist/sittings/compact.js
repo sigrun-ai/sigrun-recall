@@ -52,6 +52,8 @@ export async function beforeCompactSittings(compaction, deps) {
             throughEntryId: Number.POSITIVE_INFINITY,
             throughAt: Number.POSITIVE_INFINITY,
         }];
+    // FAIL-OPEN by design: if lineage cannot be read, the built-in
+    // summarizer may still see an earlier sitting rather than failing the run.
     const lineage = await loadLineage(deps.conversationId, deps.read, { memo: new Map() })
         .catch(ownLineage);
     const boundary = currentBoundary(deps.db.sittings(lineage.map((link) => link.conversationId)), lineage);

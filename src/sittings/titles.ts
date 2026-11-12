@@ -21,7 +21,8 @@ const TITLE_TIMEOUT_MS = 20_000;
  * sentence punctuation, six words, then 60 characters on a word boundary.
  */
 export function cleanTitle(raw: string): string | undefined {
-	let text = raw.trim();
+	// Dividers render this label raw: remove C0/C1 controls before any caps.
+	let text = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
 	for (;;) {
 		const quoted = /^(['"`])([\s\S]*)\1$/.exec(text);
 		if (quoted === null) break;

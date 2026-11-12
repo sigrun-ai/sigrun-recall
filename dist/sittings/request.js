@@ -74,6 +74,15 @@ async function findFirstUserEntry(conversationId, read) {
     }
     return undefined;
 }
+/** The latest own-conversation entry strictly before the new boundary. */
+async function findPreviousEntryId(conversationId, read, boundaryEntryId) {
+    const page = await read({ order: "descending", maxEntryId: boundaryEntryId - 1 }, 200, undefined);
+    for (const candidate of page.items) {
+        if (candidate.conversationId === conversationId)
+            return candidate.id;
+    }
+    return boundaryEntryId - 1;
+}
 /**
  * Draw sittings boundaries and assemble the request: earlier sittings are
  * summarized in a stored block on the boundary message, and pre-boundary
@@ -99,6 +108,13 @@ export async function applySittings(messages, deps) {
     const lineageIds = lineage.map((link) => link.conversationId);
     const sittings = deps.db.sittings(lineageIds);
     const boundarySitting = currentBoundary(sittings, lineage);
+    if (ineligible || !deps.enabled) {
+        // A stored boundary only governs a trimmed sitting request. Once
+        // sittings are disabled or the conversation is ineligible, retaining
+        // it would hide in-sitting items from recall without trimming the
+        // request, duplicating their context.
+        return { rule: { lineage }, skipTimestamps: new Set() };
+    }
     const rule = boundarySitting === undefined
         ? { lineage }
         : {
@@ -108,9 +124,6 @@ export async function applySittings(messages, deps) {
                 at: boundarySitting.startAt,
             },
         };
-    if (ineligible || !deps.enabled) {
-        return { rule, skipTimestamps: new Set() };
-    }
     const newestIndex = messages.findLastIndex((message) => message.role === "user");
     const newest = messages[newestIndex];
     if (newest === undefined || newest.role !== "user") {
@@ -223,7 +236,7 @@ async function drawBoundary(messages, newestIndex, entry, lineage, deps) {
         const line = deps.db
             .lines([deps.conversationId])
             .find((candidate) => candidate.startEntryId === previousSitting.startEntryId);
-        seal = sealArgs(previousSitting, line, entry.id, cls);
+        seal = sealArgs(previousSitting, line, await findPreviousEntryId(deps.conversationId, deps.read, entry.id), cls);
     }
     // The table of contents is taken AFTER the previous sitting's seal is
     // computed: the just-computed seal participates as a sealed line even

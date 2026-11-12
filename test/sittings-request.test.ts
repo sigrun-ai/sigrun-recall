@@ -558,13 +558,47 @@ describe("applySittings", () => {
 		expect(result.skipTimestamps).toEqual(new Set([BOUNDARY]));
 	});
 
+	it("a covering idle draft seals with its own text and class", async () => {
+		for (const cls of ["normal", "local-only"] as const) {
+			const { entries, messages } = fixture();
+			const db = memoryDb();
+			db.putLineDraft({
+				conversationId: 1,
+				startEntryId: 1,
+				text: "Drafted before the idle boundary",
+				cls,
+				// Entry 2 is the previous sitting's last entry; the boundary
+				// entry (3) had not yet been written at the idle wake.
+				coversThrough: 2,
+			});
+			const result = await applySittings(messages, deps({
+				db,
+				read: reader(entries),
+				searcher: searchHits([hit("new local hit", 1, "local-only")]),
+			}));
+			expect(result.messages).toBeDefined();
+			expect(db.lines([1])).toEqual([{
+				conversationId: 1,
+				startEntryId: 1,
+				text: "Drafted before the idle boundary",
+				cls,
+				coversThrough: 2,
+				sealed: true,
+			}]);
+			expect(db.sittings([1]).find((row) => row.boundary)?.block?.toc[0]).toMatchObject({
+				text: "Drafted before the idle boundary",
+				cls,
+			});
+		}
+	});
+
 	it("the previous sitting's line is sealed at the boundary", async () => {
 		const { entries, messages } = fixture();
 		const db = memoryDb();
 		await applySittings(messages, deps({ db, read: reader(entries) }));
 		const line = db.lines([1]).find((candidate) => candidate.startEntryId === 1);
 		expect(line?.sealed).toBe(true);
-		expect(line?.coversThrough).toBe(3);
+		expect(line?.coversThrough).toBe(2);
 		expect(line?.text).toBe("old question");
 		// The sealed line appears in the boundary sitting's stored table of contents.
 		const sitting = db.sittings([1]).find((row) => row.boundary);
@@ -576,6 +610,28 @@ describe("applySittings", () => {
 				cls: "normal",
 			},
 		]);
+	});
+
+	it("disabling or ineligibility removes a stale boundary from the rule", async () => {
+		const { entries, messages } = fixture();
+		const db = memoryDb();
+		const enabled = deps({ db, read: reader(entries) });
+		await applySittings(messages, enabled);
+		expect(db.sittings([1]).some((row) => row.boundary)).toBe(true);
+		const lineage = [{
+			conversationId: 1,
+			throughEntryId: Number.POSITIVE_INFINITY,
+			throughAt: Number.POSITIVE_INFINITY,
+		}];
+		for (const overrides of [
+			{ enabled: false },
+			{ meta: meta({ internal: true } as Partial<SessionMeta>) },
+		]) {
+			const result = await applySittings(messages, { ...enabled, ...overrides });
+			expect(result.messages).toBeUndefined();
+			expect(result.rule).toEqual({ lineage });
+			expect(result.rule.boundary).toBeUndefined();
+		}
 	});
 
 	it("a disabled user gets today's behaviour", async () => {
@@ -701,6 +757,7 @@ describe("beforeRequest sittings wiring", () => {
 	} = {}) {
 		const root = await mkdtemp(join(tmpdir(), "recall-sittings-hook-"));
 		tempRoots.push(root);
+		let hostEntryReads = 0;
 		const entries = overrides.entries ?? fixture().entries;
 		const result = await createRecall(
 			withDeclaredSettings({
@@ -716,6 +773,10 @@ describe("beforeRequest sittings wiring", () => {
 				},
 				conversations: {
 					meta: async () => meta(overrides.meta),
+					entries: async (query: Parameters<EntriesReader>[0], limit: number, cursor: unknown) => {
+						hostEntryReads += 1;
+						return reader(entries)(query, limit, cursor);
+					},
 					entry: async (conversationId: number, entryId: number) =>
 						entries.find(
 							(candidate) =>
@@ -743,7 +804,7 @@ describe("beforeRequest sittings wiring", () => {
 						: { promptCache: overrides.promptCache },
 			},
 		};
-		return { result, beforeRequest, api, context, root };
+		return { result, beforeRequest, api, context, root, hostEntryReads: () => hostEntryReads };
 	}
 
 	it("the boundary message carries exactly one recall block after the full path", async () => {
@@ -831,6 +892,21 @@ describe("beforeRequest sittings wiring", () => {
 				context as never,
 			);
 			expect(returned).toBeUndefined();
+		} finally {
+			await result.harnessShutdown?.({} as never, {} as never);
+		}
+	});
+
+	it("auto-recall off also gates the drafter worker", async () => {
+		const { result, hostEntryReads } = await boot({
+			userSettings: { autoRecall: false, sittings: true },
+		});
+		try {
+			await result.workers![0]!.run(
+				{ abortSignal: undefined },
+				{ event: "conversationIdle", conversationId: 1 } as never,
+			);
+			expect(hostEntryReads()).toBe(0);
 		} finally {
 			await result.harnessShutdown?.({} as never, {} as never);
 		}
