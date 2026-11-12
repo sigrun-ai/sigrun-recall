@@ -16,6 +16,7 @@ import {
   type SearchContext,
   type Searcher,
 } from "../src/search.js";
+import type { InContextRule } from "../src/sittings/lineage.js";
 
 const NOW = 1_700_000_000_000;
 
@@ -225,6 +226,60 @@ async function perUserSearch(options: PerUserSearchOptions) {
 }
 
 describe("search", () => {
+  it("inContext filters only material already visible in the current sitting", async () => {
+    const db = RecallDb.open(":memory:");
+    db.insertItem(item({ entryId: 39, at: 3_900 }), "pre-boundary clinic");
+    db.insertItem(item({ entryId: 40, at: 4_000 }), "boundary clinic");
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async (_conversationId, entryId) =>
+        entry(entryId, 1, entryId === 39 ? "pre-boundary clinic" : "boundary clinic"),
+      isLocal: () => false,
+      now: () => NOW,
+    });
+    const inContextRule: InContextRule = {
+      lineage: [
+        {
+          conversationId: 1,
+          throughEntryId: Number.POSITIVE_INFINITY,
+          throughAt: Number.POSITIVE_INFINITY,
+        },
+      ],
+      boundary: { entryId: 40, at: 4_000 },
+    };
+    const hits = await searcher.search(
+      "clinic",
+      context({ inContext: inContextRule }),
+      10,
+    );
+    expect(hits.map((hit) => hit.item.entryId)).toEqual([39]);
+    db.close();
+  });
+
+  it("excludeConversation still suppresses the whole conversation when inContext is present", async () => {
+    const { searcher } = setup("clinic");
+    expect(
+      await searcher.search(
+        "clinic",
+        context({
+          excludeConversation: 1,
+          inContext: {
+            lineage: [
+              {
+                conversationId: 1,
+                throughEntryId: Number.POSITIVE_INFINITY,
+                throughAt: Number.POSITIVE_INFINITY,
+              },
+            ],
+            boundary: { entryId: 40, at: 4_000 },
+          },
+        }),
+        10,
+      ),
+    ).toEqual([]);
+  });
+
   it("concurrent searches use each caller's model", async () => {
     const rig = await perUserSearch({
       bobDefault: "acme-embed/bob",

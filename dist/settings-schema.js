@@ -1,7 +1,8 @@
 /**
  * Recall's declared settings (settings rework): the shared
- * `externalizeBytes` key and the per-user `autoRecall` setting, as JSON
- * Schema. Core generates the settings page from this file
+ * `externalizeBytes` and `sittings` keys and the per-user `autoRecall`
+ * and `sittings` settings, as JSON Schema. Core generates the settings page
+ * from this file
  * and checks every save against it, so the schema is the single source of
  * the defaults and of the malformed-value repair that the deleted
  * `resolveSettings`/`resolveUserSettings` parsers performed by hand.
@@ -10,10 +11,12 @@
  *
  * - **shared** (`settings/recall.json`) — `externalizeBytes`, the size at
  *   which a complete tool result is stored whole and replaced in model
- *   output by a head, outline and handle.
+ *   output by a head, outline and handle; `sittings`, which controls how
+ *   past conversation sittings are detected.
  * - **per user** — `autoRecall`, which decides whether one directory
- *   user's requests are augmented. Locality comes from the admin's
- *   provider switches through `host.models.isLocal`, never from a user
+ *   user's requests are augmented, and `sittings`, which includes earlier
+ *   sittings of the current conversation in recall. Locality comes from the
+ *   admin's provider switches through `host.models.isLocal`, never from a user
  *   settings key.
  *
  * The OLD `embedding` group is deliberately NOT declared: embeddings come
@@ -46,11 +49,39 @@ export const RECALL_SETTINGS_SCHEMA = asJsonSchema(Type.Object({
         // Read per afterTool call.
         "x-sigrun-apply": "live",
     }),
+    sittings: Type.Object({
+        minGapMinutes: Type.Integer({
+            title: "Minimum gap (minutes)",
+            description: "Minimum idle gap between messages that starts a new sitting.",
+            minimum: 1,
+            default: 60,
+            "x-sigrun-apply": "live",
+        }),
+        minHistoryTokens: Type.Integer({
+            title: "Minimum history tokens",
+            description: "Minimum estimated history tokens before sittings are computed.",
+            minimum: 0,
+            default: 8000,
+            "x-sigrun-apply": "live",
+        }),
+    }, {
+        title: "Sittings",
+        description: "Controls how past conversation sittings are detected.",
+        default: { minGapMinutes: 60, minHistoryTokens: 8000 },
+        "x-sigrun-apply": "live",
+    }),
 }));
 export const RECALL_USER_SETTINGS_SCHEMA = asJsonSchema(Type.Object({
     autoRecall: Type.Boolean({
         title: "Automatic recall",
-        description: "Add bounded, clearly marked reference material from your past conversations to each new user message. The current conversation and job runs are always excluded.",
+        description: "Add bounded, clearly marked reference material from your past conversations to each new user message. Earlier sittings of the current conversation are included; job runs are always excluded.",
+        default: true,
+        // Read per request.
+        "x-sigrun-apply": "live",
+    }),
+    sittings: Type.Boolean({
+        title: "Sittings",
+        description: "Include earlier sittings of the current conversation in recall.",
         default: true,
         // Read per request.
         "x-sigrun-apply": "live",

@@ -3,6 +3,42 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { splitText } from "./passages.js";
 import { redact } from "./redact.js";
+const SITTINGS_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS sitting_decisions (
+		conversationId INTEGER NOT NULL,
+		entryId INTEGER NOT NULL,
+		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
+		PRIMARY KEY (conversationId, entryId)
+	);
+	CREATE TABLE IF NOT EXISTS sittings (
+		conversationId INTEGER NOT NULL,
+		startEntryId INTEGER NOT NULL,
+		startAt INTEGER NOT NULL,
+		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
+		boundaryText TEXT NOT NULL DEFAULT '',
+		previous TEXT,
+		block TEXT,
+		title TEXT,
+		titleState TEXT NOT NULL DEFAULT 'none' CHECK (titleState IN ('pending', 'done', 'failed', 'none')),
+		PRIMARY KEY (conversationId, startEntryId)
+	);
+	CREATE TABLE IF NOT EXISTS sitting_lines (
+		conversationId INTEGER NOT NULL,
+		startEntryId INTEGER NOT NULL,
+		text TEXT NOT NULL,
+		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+		coversThrough INTEGER NOT NULL,
+		sealed INTEGER NOT NULL CHECK (sealed IN (0, 1)),
+		PRIMARY KEY (conversationId, startEntryId)
+	);
+	CREATE TABLE IF NOT EXISTS month_lines (
+		conversationId INTEGER NOT NULL,
+		month TEXT NOT NULL,
+		text TEXT NOT NULL,
+		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+		PRIMARY KEY (conversationId, month)
+	);
+`;
 const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS items (
 		id INTEGER PRIMARY KEY,
@@ -86,6 +122,7 @@ const SCHEMA = `
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);
+	${SITTINGS_SCHEMA}
 	CREATE TABLE IF NOT EXISTS schema_version (
 		version INTEGER NOT NULL
 	);
@@ -131,6 +168,7 @@ export class RecallDb {
                 // Stamped 3 so the v4 rebuild below runs on this path too: a
                 // database with tables but no version row may carry the OLD
                 // vectors shape, and SCHEMA's `IF NOT EXISTS` never reshapes it.
+                // The v5 step below is idempotent against SCHEMA's fresh tables.
                 this.db.prepare("INSERT INTO schema_version (version) VALUES (3)").run();
             }
             else if (current.version < 2) {
@@ -255,6 +293,17 @@ export class RecallDb {
                 // (model, itemId) index makes it a range scan even mid-switch.
                 this.db.exec("CREATE INDEX IF NOT EXISTS vectors_model ON vectors (model, itemId)");
                 this.db.prepare("UPDATE schema_version SET version = 4").run();
+            }
+            const afterV4 = this.db
+                .prepare("SELECT version FROM schema_version")
+                .get();
+            if (afterV4.version < 5) {
+                // The four sittings tables are all new: no rows to migrate.
+                // `IF NOT EXISTS` makes this idempotent against SCHEMA's fresh
+                // create, so a fresh database stamped through v4 also passes
+                // through here cleanly.
+                this.db.exec(SITTINGS_SCHEMA);
+                this.db.prepare("UPDATE schema_version SET version = 5").run();
             }
             this.db.exec("COMMIT");
         }
@@ -678,6 +727,157 @@ export class RecallDb {
                 : [];
             return [row.messageKey, { block: row.block, cls: row.cls, sources }];
         }));
+    }
+    // --- Sittings (v5) ---
+    /** Read a stored boundary decision. `undefined` = never decided. */
+    decision(conversationId, entryId) {
+        const row = this.db
+            .prepare("SELECT boundary FROM sitting_decisions WHERE conversationId = ? AND entryId = ?")
+            .get(conversationId, entryId);
+        return row === undefined ? undefined : row.boundary === 1;
+    }
+    /** Stores a boundary decision; in practice callers record negatives, but the boolean round-trips. */
+    putDecision(conversationId, entryId, boundary) {
+        this.db
+            .prepare(`INSERT INTO sitting_decisions (conversationId, entryId, boundary) VALUES (?, ?, ?)
+				 ON CONFLICT(conversationId, entryId) DO UPDATE SET boundary = excluded.boundary`)
+            .run(conversationId, entryId, boundary ? 1 : 0);
+    }
+    /**
+     * ONE transaction: positive decision + sitting row insert + previous line seal.
+     * Returns `false` and writes NOTHING when a sitting row already exists for
+     * (conversationId, startEntryId) — re-entrancy guard for `beforeRequest`.
+     */
+    createBoundary(row, sealPrevious) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const existing = this.db
+                .prepare("SELECT 1 FROM sittings WHERE conversationId = ? AND startEntryId = ?")
+                .get(row.conversationId, row.startEntryId);
+            if (existing !== undefined) {
+                this.db.exec("COMMIT");
+                return false;
+            }
+            this.db
+                .prepare(`INSERT INTO sitting_decisions (conversationId, entryId, boundary) VALUES (?, ?, 1)
+					 ON CONFLICT(conversationId, entryId) DO UPDATE SET boundary = 1`)
+                .run(row.conversationId, row.startEntryId);
+            this.db
+                .prepare(`INSERT INTO sittings (conversationId, startEntryId, startAt, boundary, boundaryText, previous, block, title, titleState)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                .run(row.conversationId, row.startEntryId, row.startAt, row.boundary ? 1 : 0, row.boundaryText, row.previous === null ? null : JSON.stringify(row.previous), row.block === null ? null : JSON.stringify(row.block), row.title, row.titleState);
+            if (sealPrevious !== undefined) {
+                this.db
+                    .prepare(`INSERT INTO sitting_lines (conversationId, startEntryId, text, cls, coversThrough, sealed)
+						 VALUES (?, ?, ?, ?, ?, 1)
+						 ON CONFLICT(conversationId, startEntryId) DO UPDATE SET
+						 text = excluded.text, cls = excluded.cls, coversThrough = excluded.coversThrough, sealed = 1
+						 WHERE sitting_lines.sealed = 0`)
+                    .run(row.conversationId, sealPrevious.startEntryId, sealPrevious.line.text, sealPrevious.line.cls, sealPrevious.line.coversThrough);
+            }
+            this.db.exec("COMMIT");
+            return true;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    /** Sittings for the given conversations, ordered by startEntryId. */
+    sittings(conversationIds) {
+        if (conversationIds.length === 0)
+            return [];
+        const placeholders = conversationIds.map(() => "?").join(",");
+        // SAFETY: placeholders are generated from array length; values are bound.
+        const rows = this.db
+            .prepare(`SELECT * FROM sittings WHERE conversationId IN (${placeholders}) ORDER BY startEntryId`)
+            .all(...conversationIds);
+        return rows.map((row) => ({
+            conversationId: row.conversationId,
+            startEntryId: row.startEntryId,
+            startAt: row.startAt,
+            boundary: row.boundary === 1,
+            boundaryText: row.boundaryText,
+            previous: row.previous === null ? null : JSON.parse(row.previous),
+            block: row.block === null ? null : JSON.parse(row.block),
+            title: row.title,
+            titleState: row.titleState,
+        }));
+    }
+    /** Insert-or-ignore: used for the first, non-boundary sitting. */
+    putSitting(row) {
+        this.db
+            .prepare(`INSERT INTO sittings (conversationId, startEntryId, startAt, boundary, boundaryText, previous, block, title, titleState)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(conversationId, startEntryId) DO NOTHING`)
+            .run(row.conversationId, row.startEntryId, row.startAt, row.boundary ? 1 : 0, row.boundaryText, row.previous === null ? null : JSON.stringify(row.previous), row.block === null ? null : JSON.stringify(row.block), row.title, row.titleState);
+    }
+    /** Update the title and title state of a sitting. */
+    setSittingTitle(conversationId, startEntryId, title, state) {
+        this.db
+            .prepare(`UPDATE sittings SET title = ?, titleState = ? WHERE conversationId = ? AND startEntryId = ?`)
+            .run(title, state, conversationId, startEntryId);
+    }
+    /** Lines for the given conversations. */
+    lines(conversationIds) {
+        if (conversationIds.length === 0)
+            return [];
+        const placeholders = conversationIds.map(() => "?").join(",");
+        // SAFETY: placeholders are generated from array length; values are bound.
+        const rows = this.db
+            .prepare(`SELECT * FROM sitting_lines WHERE conversationId IN (${placeholders}) ORDER BY startEntryId`)
+            .all(...conversationIds);
+        return rows.map((row) => ({
+            conversationId: row.conversationId,
+            startEntryId: row.startEntryId,
+            text: row.text,
+            cls: row.cls,
+            coversThrough: row.coversThrough,
+            sealed: row.sealed === 1,
+        }));
+    }
+    /** Write a draft line; no-op if the row is already sealed. */
+    putLineDraft(row) {
+        this.db
+            .prepare(`INSERT INTO sitting_lines (conversationId, startEntryId, text, cls, coversThrough, sealed)
+				 VALUES (?, ?, ?, ?, ?, 0)
+				 ON CONFLICT(conversationId, startEntryId) DO UPDATE SET
+				 	text = excluded.text, cls = excluded.cls, coversThrough = excluded.coversThrough
+				 	WHERE sitting_lines.sealed = 0`)
+            .run(row.conversationId, row.startEntryId, row.text, row.cls, row.coversThrough);
+    }
+    /** Upsert a line as sealed with exactly this content; no-op when already sealed. */
+    sealLine(conversationId, startEntryId, line) {
+        this.db
+            .prepare(`INSERT INTO sitting_lines (conversationId, startEntryId, text, cls, coversThrough, sealed)
+				 VALUES (?, ?, ?, ?, ?, 1)
+				 ON CONFLICT(conversationId, startEntryId) DO UPDATE SET
+				 	text = excluded.text, cls = excluded.cls, coversThrough = excluded.coversThrough, sealed = 1
+				 	WHERE sitting_lines.sealed = 0`)
+            .run(conversationId, startEntryId, line.text, line.cls, line.coversThrough);
+    }
+    /** Month lines for the given conversations. */
+    monthLines(conversationIds) {
+        if (conversationIds.length === 0)
+            return [];
+        const placeholders = conversationIds.map(() => "?").join(",");
+        // SAFETY: placeholders are generated from array length; values are bound.
+        const rows = this.db
+            .prepare(`SELECT * FROM month_lines WHERE conversationId IN (${placeholders}) ORDER BY month`)
+            .all(...conversationIds);
+        return rows.map((row) => ({
+            conversationId: row.conversationId,
+            month: row.month,
+            text: row.text,
+            cls: row.cls,
+        }));
+    }
+    /** Insert-or-ignore: written once per month. */
+    putMonthLine(row) {
+        this.db
+            .prepare(`INSERT INTO month_lines (conversationId, month, text, cls) VALUES (?, ?, ?, ?)
+				 ON CONFLICT(conversationId, month) DO NOTHING`)
+            .run(row.conversationId, row.month, row.text, row.cls);
     }
     close() {
         this.db.close();

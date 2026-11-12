@@ -1,7 +1,8 @@
 /**
  * Recall's declared settings (settings rework): the shared
- * `externalizeBytes` key and the per-user `autoRecall` setting, as JSON
- * Schema. Core generates the settings page from this file
+ * `externalizeBytes` and `sittings` keys and the per-user `autoRecall`
+ * and `sittings` settings, as JSON Schema. Core generates the settings page
+ * from this file
  * and checks every save against it, so the schema is the single source of
  * the defaults and of the malformed-value repair that the deleted
  * `resolveSettings`/`resolveUserSettings` parsers performed by hand.
@@ -10,10 +11,12 @@
  *
  * - **shared** (`settings/recall.json`) — `externalizeBytes`, the size at
  *   which a complete tool result is stored whole and replaced in model
- *   output by a head, outline and handle.
+ *   output by a head, outline and handle; `sittings`, which controls how
+ *   past conversation sittings are detected.
  * - **per user** — `autoRecall`, which decides whether one directory
- *   user's requests are augmented. Locality comes from the admin's
- *   provider switches through `host.models.isLocal`, never from a user
+ *   user's requests are augmented, and `sittings`, which includes earlier
+ *   sittings of the current conversation in recall. Locality comes from the
+ *   admin's provider switches through `host.models.isLocal`, never from a user
  *   settings key.
  *
  * The OLD `embedding` group is deliberately NOT declared: embeddings come
@@ -28,9 +31,14 @@ import { Type, type Static } from "typebox";
 export declare const DEFAULT_EXTERNALIZE_BYTES = 24576;
 export declare const RECALL_SETTINGS_SCHEMA: Type.TObject<{
     externalizeBytes: Type.TInteger;
+    sittings: Type.TObject<{
+        minGapMinutes: Type.TInteger;
+        minHistoryTokens: Type.TInteger;
+    }>;
 }> & Readonly<Record<string, unknown>>;
 export declare const RECALL_USER_SETTINGS_SCHEMA: Type.TObject<{
     autoRecall: Type.TBoolean;
+    sittings: Type.TBoolean;
 }> & Readonly<Record<string, unknown>>;
 export type RecallSettings = Static<typeof RECALL_SETTINGS_SCHEMA>;
 export type UserRecallSettings = Static<typeof RECALL_USER_SETTINGS_SCHEMA>;

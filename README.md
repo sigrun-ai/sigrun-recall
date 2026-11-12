@@ -6,7 +6,7 @@ Recall indexes conversation turns, tool calls/results, and complete large tool r
 
 ## Settings and secrets
 
-Recall declares its settings as JSON Schema, so the extension page is a generated form. Shared settings: `externalizeBytes` (default `24576`). Per-user settings: `autoRecall` (default `true`) applies live, and one user's settings never touch another user's file. Locality is controlled by the admin's per-extension switch, not by user settings.
+Recall declares its settings as JSON Schema, so the extension page is a generated form. Shared settings: `externalizeBytes` (default `24576`) and the two sitting-boundary thresholds described below. Per-user settings: `autoRecall` (default `true`) and `sittings` (default `true`) apply live, and one user's settings never touch another user's file. Locality is controlled by the admin's per-extension switch, not by user settings.
 
 ```json
 { "externalizeBytes": 24576 }
@@ -32,7 +32,19 @@ Recall used to embed through its own `embedding` settings block and `embedding-a
 
 Items are `normal` or `local-only`. Local-only material reaches only models whose full provider/model id is marked local by the admin switch; an absent model fails closed. Recall also re-checks live conversation sharing for every reader of the calling conversation: material shared later becomes visible, and revoked sharing stops matching immediately. Internal conversations are never indexed or recalled. Displaying local-only material taints subsequent capture in the calling conversation.
 
-Auto-recall excludes the current conversation and job runs; explicit `recall_search` can include both. Stored injection blocks are reused byte-for-byte where policy allows and are kept for the conversation's life (they are small; v1 does not prune them).
+Auto-recall includes relevant earlier material from the current conversation and its fork ancestors, while job runs remain excluded. With sittings, that material is pre-boundary only; without a boundary, the in-context rule excludes the inherited range: this conversation plus its ancestors up to the fork point. Explicit `recall_search` can include both the current conversation and job runs. Stored injection blocks are reused byte-for-byte where policy allows and are kept for the conversation's life (they are small; v1 does not prune them).
+
+## Sittings
+
+A **sitting** is a run of activity in one conversation without a long pause. When a later user message starts a new sitting, recall gives the model the current sitting, the previous exchange, and a table of contents of earlier sittings instead of continually growing the full-history context. The user's transcript remains unchanged.
+
+Three live settings control this: shared `sittings.minGapMinutes` (default `60`) and `sittings.minHistoryTokens` (default `8000`), and the per-user `sittings` switch (default `true`). Sittings also require the per-user `autoRecall` setting to be enabled. The minimum gap is raised to the chat model's longest declared prompt-cache lifetime when that is longer. A pause alone does not start a sitting if there is too little history to trim.
+
+Automatic recall includes relevant pre-boundary material from the current conversation, including inherited history from a fork's ancestors. Material already in the current sitting is not injected again. The explicit `recall_search` and `recall_open` tools can always reach everything, including the current conversation.
+
+The next core minor (0.16.0) adds the host calls used for transcript dividers and per-sitting automatic titles (`host.conversations.markContext` and `setAutoName`). Recall feature-detects both: older cores still get sitting-shaped requests, but no divider or automatic sitting title. A name typed by a person always takes precedence over an automatic title.
+
+Threshold compaction is declined when there is nothing in the current sitting to compress. An overflow or manual compaction whose cut is at or before the sitting boundary receives a fixed summary pointing to the table of contents and recall. Compaction never re-summarizes earlier sittings.
 
 ## Large results and reading
 

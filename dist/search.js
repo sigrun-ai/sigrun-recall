@@ -1,4 +1,5 @@
 import { audienceCovers } from "./audience.js";
+import { inContext as itemInContext } from "./sittings/lineage.js";
 import { passagesOf } from "./passages.js";
 import { mayRead } from "./policy.js";
 import { redact } from "./redact.js";
@@ -54,6 +55,7 @@ export function createSearcher(deps) {
                     break;
                 const item = candidate.item;
                 if (item.conversationId === ctx.excludeConversation ||
+                    (ctx.inContext !== undefined && itemInContext(item, ctx.inContext)) ||
                     (item.job && !ctx.includeJobs) ||
                     (ctx.kinds !== undefined && !ctx.kinds.includes(item.kind)) ||
                     (ctx.since !== undefined && item.at < ctx.since) ||

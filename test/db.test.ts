@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RecallDb, type DocRow, type ItemRow } from "../src/db.js";
+import type { SittingRow, LineRow, MonthLineRow, SittingBlock, PreviousExchange } from "../src/sittings/types.js";
 
 const openDatabases: RecallDb[] = [];
 const temporaryDirectories: string[] = [];
@@ -495,5 +496,296 @@ describe("model-scoped vectors", () => {
 
     expect(db.modelCoverage(NEW_MODEL, false)).toEqual({ complete: true });
     expect(db.modelCoverage(NEW_MODEL, true)).toEqual({ complete: false });
+  });
+});
+
+describe("v5 schema — sittings", () => {
+  /** A v4 database seeded by SCHEMA then downgraded to version 4. */
+  async function seededV4(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "recall-v5-"));
+    temporaryDirectories.push(root);
+    const path = join(root, "recall.db");
+    const seed = RecallDb.open(path);
+    seed.insertItem(item(), "electrician");
+    seed.close();
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec(`
+        DROP TABLE sitting_decisions;
+        DROP TABLE sittings;
+        DROP TABLE sitting_lines;
+        DROP TABLE month_lines;
+        UPDATE schema_version SET version = 4;
+      `);
+    } finally {
+      raw.close();
+    }
+    return path;
+  }
+
+  function sittingRow(overrides: Partial<SittingRow> = {}): SittingRow {
+    return {
+      conversationId: 1,
+      startEntryId: 10,
+      startAt: 1_700_000_000_000,
+      boundary: false,
+      boundaryText: "",
+      previous: null,
+      block: null,
+      title: null,
+      titleState: "none",
+      ...overrides,
+    };
+  }
+
+  function lineRow(overrides: Partial<LineRow> = {}): LineRow {
+    return {
+      conversationId: 1,
+      startEntryId: 10,
+      text: "hello",
+      cls: "normal",
+      coversThrough: 15,
+      sealed: false,
+      ...overrides,
+    };
+  }
+
+  function monthLineRow(overrides: Partial<MonthLineRow> = {}): MonthLineRow {
+    return {
+      conversationId: 1,
+      month: "2024-01",
+      text: "january line",
+      cls: "normal",
+      ...overrides,
+    };
+  }
+
+  const previousExchange: PreviousExchange = {
+    user: { role: "user", content: "hi", timestamp: 1_700_000_000_000 },
+    assistant: {
+      role: "assistant",
+      content: [],
+      timestamp: 1_700_000_000_001,
+      api: "openai-completions",
+      provider: "openai",
+      model: "gpt-4",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+    },
+  };
+
+  const sittingBlock: SittingBlock = {
+    header: "## Sitting",
+    toc: [{ startAt: 1_700_000_000_000, title: "t", text: "toc", cls: "normal", month: "2024-01" }],
+    recall: { text: "recall text", cls: "normal", sources: [1, 2] },
+  };
+
+  it("a v4 database opens as v5 with the four new tables", async () => {
+    const path = await seededV4();
+
+    const db = RecallDb.open(path);
+    openDatabases.push(db);
+
+    const raw = new DatabaseSync(path);
+    try {
+      const tables = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('sitting_decisions', 'sittings', 'sitting_lines', 'month_lines')
+           ORDER BY name`,
+        )
+        .all() as { name: string }[];
+      expect(tables.map(({ name }) => name)).toEqual([
+        "month_lines",
+        "sitting_decisions",
+        "sitting_lines",
+        "sittings",
+      ]);
+    } finally {
+      raw.close();
+    }
+
+    // The new tables accept writes.
+    expect(db.decision(1, 10)).toBeUndefined();
+    db.putDecision(1, 10, false);
+    expect(db.decision(1, 10)).toBe(false);
+
+    db.putSitting(sittingRow());
+    expect(db.sittings([1])).toHaveLength(1);
+
+    db.putLineDraft(lineRow());
+    expect(db.lines([1])).toHaveLength(1);
+
+    db.putMonthLine(monthLineRow());
+    expect(db.monthLines([1])).toHaveLength(1);
+
+    // The old rows survive.
+    expect(db.item(1)).toEqual({ id: 1, ...item() });
+  });
+
+  it("putSitting twice keeps the first row", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ title: "first" }));
+    db.putSitting(sittingRow({ title: "second" }));
+
+    const rows = db.sittings([1]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.title).toBe("first");
+  });
+
+  it("sittings returns rows ordered by startEntryId", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ startEntryId: 20, title: "second" }));
+    db.putSitting(sittingRow({ startEntryId: 10, title: "first" }));
+
+    const rows = db.sittings([1]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.startEntryId).toBe(10);
+    expect(rows[1]!.startEntryId).toBe(20);
+  });
+
+  it("createBoundary twice returns true then false and the second call changes nothing", () => {
+    const db = openMemory();
+
+    const first = db.createBoundary(
+      sittingRow({ boundary: true, title: "boundary-title" }),
+      { startEntryId: 5, line: { text: "sealed text", cls: "normal", coversThrough: 9 } },
+    );
+    expect(first).toBe(true);
+
+    // Second call with DIFFERENT content must return false and change nothing.
+    const second = db.createBoundary(
+      sittingRow({ boundary: true, title: "overwritten" }),
+      { startEntryId: 5, line: { text: "different", cls: "local-only", coversThrough: 99 } },
+    );
+    expect(second).toBe(false);
+
+    const rows = db.sittings([1]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.title).toBe("boundary-title");
+
+    // The sealed line stays as the first call wrote it.
+    const lines = db.lines([1]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe("sealed text");
+    expect(lines[0]!.sealed).toBe(true);
+
+    // The decision stays as the first call wrote it.
+    expect(db.decision(1, 10)).toBe(true);
+  });
+
+  it("createBoundary seals an existing draft and a repeated call changes nothing", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ startEntryId: 10 }));
+    db.putLineDraft(lineRow({ startEntryId: 10, text: "draft text", coversThrough: 15 }));
+
+    const first = db.createBoundary(
+      sittingRow({ startEntryId: 20, boundary: true, title: "boundary-title" }),
+      { startEntryId: 10, line: { text: "sealed draft", cls: "normal", coversThrough: 19 } },
+    );
+    expect(first).toBe(true);
+    expect(db.lines([1])).toEqual([
+      lineRow({ startEntryId: 10, text: "sealed draft", coversThrough: 19, sealed: true }),
+    ]);
+
+    const second = db.createBoundary(
+      sittingRow({ startEntryId: 20, boundary: true, title: "overwritten" }),
+      { startEntryId: 10, line: { text: "different", cls: "local-only", coversThrough: 99 } },
+    );
+    expect(second).toBe(false);
+    expect(db.lines([1])).toEqual([
+      lineRow({ startEntryId: 10, text: "sealed draft", coversThrough: 19, sealed: true }),
+    ]);
+    expect(db.sittings([1])).toHaveLength(2);
+    expect(db.sittings([1])[1]!.title).toBe("boundary-title");
+    expect(db.decision(1, 20)).toBe(true);
+  });
+
+  it("createBoundary with undefined sealPrevious does not seal a line", () => {
+    const db = openMemory();
+
+    const result = db.createBoundary(sittingRow({ boundary: true }), undefined);
+    expect(result).toBe(true);
+
+    expect(db.sittings([1])).toHaveLength(1);
+    expect(db.lines([1])).toHaveLength(0);
+  });
+
+  it("putLineDraft after sealLine leaves the sealed text", () => {
+    const db = openMemory();
+    db.sealLine(1, 10, { text: "sealed", cls: "normal", coversThrough: 15 });
+    db.putLineDraft({ ...lineRow({ text: "draft" }) });
+
+    const lines = db.lines([1]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe("sealed");
+    expect(lines[0]!.sealed).toBe(true);
+  });
+
+  it("sealLine is a no-op when the row is already sealed", () => {
+    const db = openMemory();
+    db.sealLine(1, 10, { text: "sealed", cls: "normal", coversThrough: 15 });
+    db.sealLine(1, 10, { text: "different", cls: "local-only", coversThrough: 99 });
+
+    const lines = db.lines([1]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe("sealed");
+    expect(lines[0]!.cls).toBe("normal");
+  });
+
+  it("sealLine upserts a draft row to sealed", () => {
+    const db = openMemory();
+    db.putLineDraft(lineRow({ text: "draft" }));
+    expect(db.lines([1])[0]!.sealed).toBe(false);
+
+    db.sealLine(1, 10, { text: "sealed", cls: "normal", coversThrough: 20 });
+
+    const lines = db.lines([1]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe("sealed");
+    expect(lines[0]!.sealed).toBe(true);
+    expect(lines[0]!.coversThrough).toBe(20);
+  });
+
+  it("putMonthLine twice keeps the first", () => {
+    const db = openMemory();
+    db.putMonthLine(monthLineRow({ text: "first" }));
+    db.putMonthLine(monthLineRow({ text: "second" }));
+
+    const rows = db.monthLines([1]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe("first");
+  });
+
+  it("setSittingTitle updates the title and state", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ titleState: "pending" }));
+
+    db.setSittingTitle(1, 10, "my title", "done");
+
+    const rows = db.sittings([1]);
+    expect(rows[0]!.title).toBe("my title");
+    expect(rows[0]!.titleState).toBe("done");
+  });
+
+  it("JSON columns round-trip previous and block", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ previous: previousExchange, block: sittingBlock }));
+
+    const rows = db.sittings([1]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.previous).toEqual(previousExchange);
+    expect(rows[0]!.block).toEqual(sittingBlock);
+  });
+
+  it("decision round-trips the full boolean", () => {
+    const db = openMemory();
+    expect(db.decision(1, 10)).toBeUndefined();
+
+    db.putDecision(1, 10, true);
+    expect(db.decision(1, 10)).toBe(true);
+
+    db.putDecision(1, 10, false);
+    expect(db.decision(1, 10)).toBe(false);
   });
 });

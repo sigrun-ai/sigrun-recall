@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { AgentDoc, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
+import { AgentDoc, CompactionTask, defineExtension, GenerationTask, hook, ToolTask, } from "@earendil-works/pi-durable";
 import { createArtifactStore, externalize } from "./artifacts.js";
 import { BACKFILL_TASK_NAME, createBackfillTask, runSweep } from "./backfill.js";
 import { captureConversation } from "./capture.js";
@@ -12,7 +12,13 @@ import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
 import { RECALL_SETTINGS_SCHEMA, RECALL_USER_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createTools } from "./tools.js";
-import { applyRecall } from "./inject.js";
+import { applyRecall, injectionReadable } from "./inject.js";
+import { createSittingDrafter } from "./sittings/drafter.js";
+import { createSittingTitler } from "./sittings/titles.js";
+import { gapMs } from "./sittings/boundary.js";
+import { applySittings } from "./sittings/request.js";
+import { beforeCompactSittings } from "./sittings/compact.js";
+import { createLineageMemo } from "./sittings/lineage.js";
 import { createEmbeddingWarnings, createSqliteVectorIndex, createVectorArm, embedPending, } from "./vectors.js";
 /** Remove the retired per-user allowlist after telling its owner once. */
 async function migrateLocalProviders(host) {
@@ -94,6 +100,7 @@ export default async function createRecall(host, deps = {}) {
     const isLocal = (model) => host.models.isLocal(model);
     const modelRef = (model) => model === undefined ? undefined : { provider: model.provider, id: model.modelId };
     let database;
+    const lineageMemo = createLineageMemo();
     let services;
     const pending = new Set();
     /**
@@ -284,7 +291,7 @@ export default async function createRecall(host, deps = {}) {
     const artifactStore = () => (artifacts ??= createArtifactStore(db(), join(host.stores.paths.data, "artifacts")));
     const meta = (id) => host.conversations.meta(id);
     const entry = (conversationId, entryId) => host.conversations.entry(conversationId, entryId);
-    const DEFAULT_USER_SETTINGS = { autoRecall: true };
+    const DEFAULT_USER_SETTINGS = { autoRecall: true, sittings: true };
     /**
      * The per-user settings, defaulted and repaired by the declared handle.
      * A read failure keeps the directory user's defaults instead of losing
@@ -357,6 +364,11 @@ export default async function createRecall(host, deps = {}) {
         };
         return services;
     }
+    const titler = createSittingTitler({
+        db,
+        host,
+        log: (message) => console.error(message),
+    });
     const extension = {
         name: "@sigrun/recall",
         hooks: [
@@ -386,6 +398,26 @@ export default async function createRecall(host, deps = {}) {
                     }
                 },
             }),
+            hook(CompactionTask, {
+                beforeCompact: async (compaction, api, context) => {
+                    try {
+                        return await beforeCompactSittings(compaction, {
+                            conversationId: api.conversationId,
+                            db: db(),
+                            read: (query, limit, cursor) => api.entries({
+                                ...query,
+                                minEntryId: query.minEntryId,
+                                maxEntryId: query.maxEntryId,
+                            }, limit, cursor, context),
+                            complete: (input) => host.models.complete(input),
+                        });
+                    }
+                    catch (error) {
+                        console.error("recall: sittings compaction guard failed", error);
+                        return undefined;
+                    }
+                },
+            }),
             hook(GenerationTask, {
                 beforeRequest: async (request, api, context) => {
                     try {
@@ -393,19 +425,57 @@ export default async function createRecall(host, deps = {}) {
                         const prefs = liveMeta.owner === undefined
                             ? DEFAULT_USER_SETTINGS
                             : await userSettings(liveMeta.owner);
+                        const live = await settings.get();
                         const agent = await api.snapshot(AgentDoc, api.conversationId, context);
-                        const messages = await applyRecall(request.messages, {
+                        const model = modelRef(agent?.model);
+                        const entriesReader = (query, limit, cursor) => api.entries({
+                            ...query,
+                            minEntryId: query.minEntryId,
+                            maxEntryId: query.maxEntryId,
+                        }, limit, cursor, context);
+                        const ownLineage = () => [{
+                                conversationId: api.conversationId,
+                                throughEntryId: Number.POSITIVE_INFINITY,
+                                throughAt: Number.POSITIVE_INFINITY,
+                            }];
+                        const injectDeps = {
                             conversationId: api.conversationId,
                             db: db(),
                             searcher: getServices().searcher,
                             meta: liveMeta,
-                            model: modelRef(agent?.model),
+                            model,
                             autoRecall: prefs.autoRecall,
                             internal: liveMeta.internal === true,
+                            inContext: { lineage: ownLineage() },
                             isLocal,
                             sourceMeta: (id) => meta(id),
+                        };
+                        const result = await applySittings(request.messages, {
+                            conversationId: api.conversationId,
+                            db: db(),
+                            meta: liveMeta,
+                            enabled: prefs.sittings && prefs.autoRecall,
+                            options: {
+                                minGapMs: gapMs(live.sittings.minGapMinutes, model === undefined
+                                    ? undefined
+                                    : api.models.getModel(model.provider, model.id)),
+                                minHistoryTokens: live.sittings.minHistoryTokens,
+                            },
+                            model,
+                            isLocal,
+                            read: entriesReader,
+                            searcher: getServices().searcher,
+                            readable: (injection) => injectionReadable(injection, injectDeps),
+                            lineageMemo,
                         });
-                        return messages === undefined ? undefined : { messages };
+                        const messages = await applyRecall(result.messages ?? request.messages, {
+                            ...injectDeps,
+                            inContext: result.rule,
+                            skipTimestamps: result.skipTimestamps,
+                        });
+                        if (messages === undefined && result.messages === undefined)
+                            return undefined;
+                        return { messages: messages ?? result.messages };
                     }
                     catch (error) {
                         console.error("recall: automatic recall failed", error);
@@ -424,6 +494,17 @@ export default async function createRecall(host, deps = {}) {
     return {
         title: "Recall",
         extension: defineExtension(extension),
+        workers: [
+            createSittingDrafter({
+                db,
+                host,
+                userEnabled: async (user) => {
+                    const prefs = await userSettings(user);
+                    return prefs.sittings && prefs.autoRecall;
+                },
+                now: deps.now ?? Date.now,
+            }),
+        ],
         publishedHooks: createPublishedHooks({
             db,
             searcher: () => getServices().searcher,
@@ -464,6 +545,9 @@ export default async function createRecall(host, deps = {}) {
             catch (error) {
                 console.error("recall: conversation capture failed", error);
             }
+            // Only enqueue here: capture completes before title classification,
+            // but no completion is awaited on the settled-event reply path.
+            titler.onSettled(event);
         },
         harnessShutdown: async () => {
             const deadline = Date.now() + 30_000;
@@ -481,6 +565,9 @@ export default async function createRecall(host, deps = {}) {
                     }),
                 ]).finally(() => clearTimeout(timer));
             }
+            // Drain title work before closing its database, under the SAME
+            // budget as embedding capture; a hung completion is abandoned.
+            await titler.shutdown(Math.max(0, deadline - Date.now()));
             database?.close();
             database = undefined;
         },

@@ -7,13 +7,27 @@ import { captureConversation } from "../src/capture.js";
 import { RecallDb, type DocRow, type ItemRow } from "../src/db.js";
 import {
   applyRecall,
+  injectionReadable,
   messageKey,
   renderBlock,
   type InjectDeps,
 } from "../src/inject.js";
+import type { InContextRule } from "../src/sittings/lineage.js";
 import type { Hit, Searcher } from "../src/search.js";
 
 const AT = Date.parse("2026-11-02T12:00:00Z");
+
+function allInContext(conversationId: number): InContextRule {
+  return {
+    lineage: [
+      {
+        conversationId,
+        throughEntryId: Number.POSITIVE_INFINITY,
+        throughAt: Number.POSITIVE_INFINITY,
+      },
+    ],
+  };
+}
 
 function user(text: string, timestamp = AT): UserMessage {
   return { role: "user", content: text, timestamp };
@@ -81,6 +95,7 @@ function setup(
     model,
     autoRecall: true,
     internal: false,
+    inContext: allInContext(1),
     isLocal: (candidate) => candidate === "acme-local/chat-1",
     sourceMeta: async () => meta(),
   };
@@ -98,6 +113,124 @@ function texts(messages: readonly Message[] | undefined): string[] {
 }
 
 describe("automatic recall", () => {
+  it("auto-recall surfaces a pre-boundary passage of the same conversation", async () => {
+    const db = RecallDb.open(":memory:");
+    const sourceText = "the earlier clinic recommendation";
+    const item: ItemRow = {
+      id: 1,
+      conversationId: 1,
+      owner: "alice",
+      kind: "turn",
+      entryId: 12,
+      messageIndex: 0,
+      blockIndex: 0,
+      offset: 0,
+      length: sourceText.length,
+      artifact: null,
+      doc: null,
+      job: false,
+      cls: "normal",
+      at: AT - 100,
+      title: null,
+    };
+    const { id: _id, ...row } = item;
+    db.insertItem(row, sourceText);
+    const sourceEntry = {
+      id: 12,
+      conversationId: 1,
+      kind: "pi.message",
+      model: [user(sourceText, AT - 100)],
+    } as unknown as EntryRecord;
+    const searcher: Searcher = {
+      search: vi.fn(async (_query, context, limit) => {
+        expect(context.inContext).toEqual({
+          lineage: [
+            {
+              conversationId: 1,
+              throughEntryId: Number.POSITIVE_INFINITY,
+              throughAt: Number.POSITIVE_INFINITY,
+            },
+          ],
+          boundary: { entryId: 40, at: AT },
+        });
+        expect(context.excludeConversation).toBeUndefined();
+        const { createSearcher } = await import("../src/search.js");
+        return createSearcher({
+          db,
+          meta: async () => meta(),
+          entry: async () => sourceEntry,
+          isLocal: () => true,
+          now: () => AT,
+        }).search("clinic recommendation", context, limit);
+      }),
+    };
+    const deps: InjectDeps = {
+      conversationId: 1,
+      db,
+      searcher,
+      meta: meta(),
+      model: { provider: "acme-local", id: "chat-1" },
+      autoRecall: true,
+      internal: false,
+      inContext: {
+        ...allInContext(1),
+        boundary: { entryId: 40, at: AT },
+      },
+      isLocal: (candidate) => candidate === "acme-local/chat-1",
+      sourceMeta: async () => meta(),
+    };
+    const result = await applyRecall([user("current clinic question")], deps);
+    expect(texts(result).at(-1)).toContain(sourceText);
+    db.close();
+  });
+
+  it("skipTimestamps suppresses search, storage and the block for that message", async () => {
+    const { db, deps, search } = setup();
+    const message = user("boundary question");
+    db.putInjection(
+      1,
+      messageKey(message),
+      "a previously stored boundary block",
+      "normal",
+      [1],
+    );
+    const result = await applyRecall([message], {
+      ...deps,
+      skipTimestamps: new Set([message.timestamp]),
+    });
+    expect(result).toBeUndefined();
+    expect(search).not.toHaveBeenCalled();
+    expect(db.injections(1).get(messageKey(message))?.block).toBe(
+      "a previously stored boundary block",
+    );
+    db.close();
+  });
+
+  it("injectionReadable matches applyRecall's old decisions", async () => {
+    const { db, deps } = setup();
+    const injection = { cls: "normal" as const, sources: [1] };
+    expect(await injectionReadable(injection, deps)).toBe(true);
+    expect(
+      await injectionReadable(injection, {
+        ...deps,
+        sourceMeta: async () => ({ ...meta(), deleted: true }),
+      }),
+    ).toBe(false);
+    expect(
+      await injectionReadable(injection, { ...deps, sourceMeta: undefined }),
+    ).toBe(false);
+    expect(
+      await injectionReadable(
+        { cls: "local-only", sources: [1] },
+        { ...deps, model: undefined },
+      ),
+    ).toBe(false);
+    expect(
+      await injectionReadable({ cls: "normal", sources: [999] }, deps),
+    ).toBe(false);
+    db.close();
+  });
+
   it("the first request of a run appends a recall block to the newest user message", async () => {
     const { db, deps } = setup();
     const result = await applyRecall([user("current question")], deps);
@@ -390,6 +523,7 @@ describe("automatic recall", () => {
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
+      inContext: allInContext(1),
       isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     const first = await applyRecall([user("question")], deps);
@@ -418,6 +552,7 @@ describe("automatic recall", () => {
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
+      inContext: allInContext(1),
       isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     expect(await applyRecall([user("question")], deps)).toBeUndefined();
@@ -436,6 +571,7 @@ describe("automatic recall", () => {
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
+      inContext: allInContext(1),
       isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     expect(await applyRecall([user("question")], deps)).toBeUndefined();
@@ -454,6 +590,7 @@ describe("automatic recall", () => {
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
+      inContext: allInContext(1),
       isLocal: (candidate) => candidate === "acme-local/chat-1",
     };
     const first = await applyRecall([user("question")], base);

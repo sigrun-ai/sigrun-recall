@@ -5,6 +5,8 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { ArtifactStore } from "./artifacts.js";
 import { audienceCovers } from "./audience.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
+import type { InContextRule } from "./sittings/lineage.js";
+import { inContext as itemInContext } from "./sittings/lineage.js";
 import { passagesOf } from "./passages.js";
 import { mayRead } from "./policy.js";
 import { redact } from "./redact.js";
@@ -19,6 +21,8 @@ export interface SearchContext {
 	user?: string;
 	current: { conversationId: number | undefined; owner?: string; sharing?: Sharing };
 	model: { provider: string; id: string } | undefined;
+	/** Material already visible in the current model context is not recalled. */
+	inContext?: InContextRule;
 	excludeConversation?: number;
 	includeJobs: boolean;
 	/** Inclusive message-time lower bound. */
@@ -99,6 +103,7 @@ export function createSearcher(deps: {
 				const item = candidate.item;
 				if (
 					item.conversationId === ctx.excludeConversation ||
+					(ctx.inContext !== undefined && itemInContext(item, ctx.inContext)) ||
 					(item.job && !ctx.includeJobs) ||
 					(ctx.kinds !== undefined && !ctx.kinds.includes(item.kind)) ||
 					(ctx.since !== undefined && item.at < ctx.since) ||

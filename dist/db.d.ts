@@ -1,3 +1,5 @@
+import type { SittingRow, LineRow, MonthLineRow, SittingBlock, PreviousExchange } from "./sittings/types.js";
+export type { SittingRow, LineRow, MonthLineRow, SittingBlock, PreviousExchange };
 export type ItemKind = "turn" | "tool" | "artifact" | "doc";
 export type Confidentiality = "normal" | "local-only";
 export interface ItemRow {
@@ -151,5 +153,42 @@ export declare class RecallDb {
         cls: Confidentiality;
         sources: number[];
     }>;
+    /** Read a stored boundary decision. `undefined` = never decided. */
+    decision(conversationId: number, entryId: number): boolean | undefined;
+    /** Stores a boundary decision; in practice callers record negatives, but the boolean round-trips. */
+    putDecision(conversationId: number, entryId: number, boundary: boolean): void;
+    /**
+     * ONE transaction: positive decision + sitting row insert + previous line seal.
+     * Returns `false` and writes NOTHING when a sitting row already exists for
+     * (conversationId, startEntryId) — re-entrancy guard for `beforeRequest`.
+     */
+    createBoundary(row: SittingRow, sealPrevious: {
+        startEntryId: number;
+        line: {
+            text: string;
+            cls: "normal" | "local-only";
+            coversThrough: number;
+        };
+    } | undefined): boolean;
+    /** Sittings for the given conversations, ordered by startEntryId. */
+    sittings(conversationIds: readonly number[]): SittingRow[];
+    /** Insert-or-ignore: used for the first, non-boundary sitting. */
+    putSitting(row: SittingRow): void;
+    /** Update the title and title state of a sitting. */
+    setSittingTitle(conversationId: number, startEntryId: number, title: string | null, state: SittingRow["titleState"]): void;
+    /** Lines for the given conversations. */
+    lines(conversationIds: readonly number[]): LineRow[];
+    /** Write a draft line; no-op if the row is already sealed. */
+    putLineDraft(row: Omit<LineRow, "sealed">): void;
+    /** Upsert a line as sealed with exactly this content; no-op when already sealed. */
+    sealLine(conversationId: number, startEntryId: number, line: {
+        text: string;
+        cls: "normal" | "local-only";
+        coversThrough: number;
+    }): void;
+    /** Month lines for the given conversations. */
+    monthLines(conversationIds: readonly number[]): MonthLineRow[];
+    /** Insert-or-ignore: written once per month. */
+    putMonthLine(row: MonthLineRow): void;
     close(): void;
 }

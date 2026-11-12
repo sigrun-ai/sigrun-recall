@@ -39,7 +39,7 @@ describe("createRecall", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("factory result declares the backfill job, both tools, both hooks and both routes", async () => {
+  it("factory result declares the backfill job, both tools, all hooks and both routes", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-index-"));
     const result = await createRecall(
       withDeclaredSettings({
@@ -62,7 +62,8 @@ describe("createRecall", () => {
     expect(
       result.extension?.tasks?.map((task) => task.definition.name),
     ).toEqual(["recall.backfill"]);
-    expect(result.extension?.hooks).toHaveLength(2);
+    expect(result.extension?.hooks).toHaveLength(3);
+    expect(result.workers?.map((worker) => worker.name)).toEqual(["sittings"]);
     expect(
       result.routes?.map((route) => `${route.method} ${route.path}`),
     ).toEqual(["GET search", "POST backfill"]);
@@ -146,6 +147,100 @@ describe("createRecall", () => {
       }
     },
   );
+
+	it("shutdown drains the titler within the deadline and never reopens the database", async () => {
+		vi.useFakeTimers();
+		try {
+			const root = await mkdtemp(join(tmpdir(), "recall-title-drain-"));
+			let closeCount = 0;
+			const opensAfterClose: string[] = [];
+			let titleCalls = 0;
+			let releaseTitle!: () => void;
+			const title = new Promise<{ text: string; model: string }>((resolve) => {
+				releaseTitle = () => resolve({ text: "Garden plans", model: "acme/chat-1" });
+			});
+			const db = RecallDb.open(join(root, "recall.db"));
+			db.putSitting({
+				conversationId: 1,
+				startEntryId: 1,
+				startAt: 1_700_000_000_000,
+				boundary: true,
+				boundaryText: "Garden plans",
+				previous: null,
+				block: null,
+				title: null,
+				titleState: "pending",
+			});
+			db.close();
+			const result = await createRecall(
+				withDeclaredSettings({
+					stores: { paths: { data: root }, settings: { get: async () => ({}) } },
+					users: { list: async () => [] },
+					conversations: {
+						meta: async () => ({
+							pinned: false,
+							tagged: [],
+							archived: false,
+							draft: { text: "", attachments: [] },
+							source: "test",
+						}),
+					},
+					models: {
+						isLocal: () => false,
+						complete: () => {
+							titleCalls += 1;
+							return title;
+						},
+					},
+				} as never),
+				{
+					openDb: (path) => {
+						if (closeCount > 0) {
+							opensAfterClose.push(path);
+							throw new Error("database reopened after shutdown");
+						}
+						const db = RecallDb.open(path);
+						const originalClose = db.close.bind(db);
+						db.close = () => {
+							closeCount += 1;
+							originalClose();
+						};
+						return db;
+					},
+				},
+			);
+			await result.runSettled?.(
+				{
+					conversationId: 1,
+					outcome: {
+						status: "answered",
+						answerEntryId: 2,
+						answer: {
+							role: "assistant",
+							content: [{ type: "text", text: "Plant in spring." }],
+							timestamp: 1_700_000_000_001,
+						},
+					},
+				} as never,
+				{ entries: async () => ({ items: [] }) } as never,
+				{} as never,
+			);
+			// Flush the enqueued title without advancing the fake clock.
+			await Promise.resolve();
+			expect(titleCalls).toBe(1);
+			const shutdown = result.harnessShutdown?.({} as never, {} as never);
+			await vi.advanceTimersByTimeAsync(30_000);
+			await shutdown;
+			expect(closeCount).toBe(1);
+			expect(opensAfterClose).toEqual([]);
+			releaseTitle();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(opensAfterClose).toEqual([]);
+			await rm(root, { recursive: true, force: true });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 
   it("a transient model-list failure degrades search to lexical and a later call retries", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-retry-"));
