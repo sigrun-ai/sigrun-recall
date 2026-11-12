@@ -13,8 +13,11 @@ export function previousExchange(messages, beforeIndex) {
             const text = answer.content.filter((part) => part.type === "text");
             if (text.length === 0)
                 continue;
+            const user = textOnlyUser(candidate);
+            if (user.content.length === 0)
+                continue;
             return {
-                user: textOnlyUser(candidate),
+                user,
                 assistant: { ...answer, content: text },
             };
         }
@@ -36,6 +39,7 @@ export function assembleSitting(messages, input) {
         kept.splice(firstNonSystem === -1 ? kept.length : firstNonSystem, 0, input.previous.user, input.previous.assistant);
     }
     const boundaryIndex = kept.findIndex((message) => message.role === "user" && message.timestamp >= input.boundaryAt);
+    // Task 8's caller always keeps the boundary message; without a kept user the block is dropped.
     const boundary = kept[boundaryIndex];
     if (boundary?.role === "user") {
         const block = { type: "text", text: input.blockText };

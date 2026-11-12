@@ -40,6 +40,24 @@ describe("sitting boundaries", () => {
     expect(isBoundary(messages, 1, 0, options(9_000))).toBe(true);
   });
 
+  it("no boundary at exactly the minimum gap", () => {
+    const messages = [
+      user("h".repeat(35_998), T0),
+      user("new question", T0 + 60 * MIN),
+    ];
+    expect(isBoundary(messages, 1, 0, options(9_000))).toBe(false);
+  });
+
+  it("excludes system messages from the gap check", () => {
+    const messages: Message[] = [
+      { role: "system", content: "initial prompt", timestamp: T0 },
+      user("h".repeat(35_998), T0),
+      { role: "system", content: "later prompt", timestamp: T0 + 60 * MIN },
+      user("new question", T0 + 61 * MIN),
+    ];
+    expect(isBoundary(messages, 3, 0, options(9_000))).toBe(true);
+  });
+
   it("no boundary over the gap with little history", () => {
     const messages = [
       user("h".repeat(1_998), T0),

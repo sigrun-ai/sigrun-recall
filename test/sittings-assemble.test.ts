@@ -63,6 +63,47 @@ describe("previous exchanges", () => {
     });
   });
 
+  it("rejects an aborted answer even when it has text", () => {
+    const u1 = user("first question");
+    const a1 = assistant([{ type: "text", text: "A1" }]);
+    const u2 = user("second question", T0 + 2 * MIN);
+    const a2 = assistant([{ type: "text", text: "aborted answer" }], "aborted", T0 + 3 * MIN);
+    const messages: Message[] = [u1, a1, u2, a2];
+
+    expect(previousExchange(messages, 4)).toEqual({
+      user: { ...u1, content: [{ type: "text", text: "first question" }] },
+      assistant: a1,
+    });
+  });
+
+  it("accepts an answer that ended at the length limit", () => {
+    const u1 = user("question");
+    const a1 = assistant([{ type: "text", text: "partial answer" }], "length");
+
+    expect(previousExchange([u1, a1], 2)).toEqual({
+      user: { ...u1, content: [{ type: "text", text: "question" }] },
+      assistant: a1,
+    });
+  });
+
+  it("skips an image-only answered user for an older text-bearing pair", () => {
+    const u1 = user("first question");
+    const a1 = assistant([{ type: "text", text: "A1" }]);
+    const image: ImageContent = {
+      type: "image",
+      data: "aW1hZ2U=",
+      mimeType: "image/png",
+    };
+    const u2 = user([image], T0 + 2 * MIN);
+    const a2 = assistant([{ type: "text", text: "image answer" }], "stop", T0 + 3 * MIN);
+    const messages: Message[] = [u1, a1, u2, a2];
+
+    expect(previousExchange(messages, 4)).toEqual({
+      user: { ...u1, content: [{ type: "text", text: "first question" }] },
+      assistant: a1,
+    });
+  });
+
   it("drops thinking and tool calls from the assistant", () => {
     const u1 = user("question");
     const a1 = assistant([
