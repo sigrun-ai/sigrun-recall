@@ -1,6 +1,10 @@
 import type { ExtensionNoticeInput } from "@sigrun/sigrun/extension";
 export declare const EMBEDDINGS_MOVED_KIND = "recall.embeddings-moved";
 export declare const EMBEDDINGS_MOVED_TITLE = "Recall embeddings now come from a provider";
+export declare const LOCAL_PROVIDERS_MOVED_KIND = "recall.local-providers-moved";
+export declare const LOCAL_PROVIDERS_MOVED_TITLE = "Local providers are now set by your admin";
+/** The one-per-user migration notice for the removed localProviders key. */
+export declare function localProvidersMovedNotice(): Pick<ExtensionNoticeInput, "kind" | "title" | "body">;
 /**
  * The primary admin: the FIRST directory entry carrying the admin flag,
  * in directory order (core's own `primaryAdmin` rule). `undefined` for an

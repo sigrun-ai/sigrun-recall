@@ -38,7 +38,7 @@ function entry(text: string): EntryRecord {
 function context(): SearchContext {
   return {
     current: { conversationId: 1, owner: "alice" },
-    model: { provider: "acme-local" },
+    model: { provider: "acme-local", id: "chat-1" },
     includeJobs: false,
   };
 }
@@ -220,8 +220,8 @@ describe("vectors", () => {
       db,
       meta: async () => meta(),
       entry: async () => record,
-      userSettings: async () => ({ autoRecall: true, localProviders: [] }),
-      vectors: createVectorArm(embeddings, index, MODEL, 800),
+      isLocal: () => false,
+      vectors: async () => createVectorArm(embeddings, index, MODEL, 800),
       now: () => 1_700_000_000_000,
     });
     const hits = await searcher.search("dog surgery", context(), 10);

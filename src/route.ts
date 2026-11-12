@@ -23,6 +23,7 @@ export function createRoutes(deps: {
 				const hits = await deps.searcher.search(
 					url.searchParams.get("q") ?? "",
 					{
+						user: ctx.principal.user,
 						current: { conversationId: undefined, owner: ctx.principal.user },
 						model: undefined,
 						excludeConversation,

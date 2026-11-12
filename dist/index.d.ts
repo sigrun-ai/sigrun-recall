@@ -9,9 +9,6 @@ export interface FactoryDeps {
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for ONE reason: the v4 vectors migration stamps the vectors it
- * inherits from the pre-model schema with the model the OLD settings named,
- * and that label must be known before the database is first opened (which
- * happens lazily, from synchronous call sites).
+ * Async for the raw migration-label read only.
  */
 export default function createRecall(host: SigrunHost, deps?: FactoryDeps): Promise<SigrunExtensionResult>;

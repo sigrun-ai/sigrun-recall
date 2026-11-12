@@ -62,6 +62,7 @@ export async function applyRecall(messages, deps) {
         const key = messageKey(newest);
         if (!stored.has(key) && deps.autoRecall) {
             const hits = await deps.searcher.search(`${textOf(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`, {
+                user: deps.meta.owner,
                 current: {
                     conversationId: deps.conversationId,
                     owner: deps.meta.owner,
@@ -80,20 +81,17 @@ export async function applyRecall(messages, deps) {
     }
     const readable = new Map();
     for (const [key, injection] of stored) {
-        let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.ownerLocalProviders);
+        let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.isLocal);
         for (const itemId of injection.sources) {
             const item = deps.db.item(itemId);
-            if (item === undefined || deps.sourceLocalProviders === undefined) {
+            if (item === undefined) {
                 allowed = false;
                 break;
             }
-            const providers = item.owner === null
-                ? []
-                : await deps.sourceLocalProviders(item.owner).catch(() => []);
             if (item.conversationId === null) {
                 // User-owned documents have no conversation; the owner is the audience.
                 if (!audienceCovers(deps.meta, { owner: item.owner ?? undefined }) ||
-                    !mayRead(item.cls, deps.model, providers)) {
+                    !mayRead(item.cls, deps.model, deps.isLocal)) {
                     allowed = false;
                     break;
                 }
@@ -108,7 +106,7 @@ export async function applyRecall(messages, deps) {
                 source.internal === true ||
                 source.deleted === true ||
                 !audienceCovers(deps.meta, source) ||
-                !mayRead(item.cls, deps.model, providers)) {
+                !mayRead(item.cls, deps.model, deps.isLocal)) {
                 allowed = false;
                 break;
             }

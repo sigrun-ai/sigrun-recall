@@ -17,7 +17,7 @@ import { captureConversation } from "./capture.js";
 import { migrationLabel } from "./legacy-embedding.js";
 import { RecallDb } from "./db.js";
 import { createPublishedHooks } from "./hooks.js";
-import { embeddingsMovedNotice, primaryAdmin } from "./notice.js";
+import { embeddingsMovedNotice, localProvidersMovedNotice, primaryAdmin } from "./notice.js";
 import { createSearcher } from "./search.js";
 import { toolExecuted } from "./tool-executed.js";
 import { createRoutes } from "./route.js";
@@ -37,6 +37,52 @@ import {
 	type EmbeddingHost,
 	type EmbeddingModelRow,
 } from "./vectors.js";
+
+/** Remove the retired per-user allowlist after telling its owner once. */
+async function migrateLocalProviders(host: SigrunHost): Promise<void> {
+	let users: readonly { user: string }[];
+	try {
+		users = await host.users.list();
+	} catch (error) {
+		console.warn("recall: the local-providers migration could not list users", error);
+		return;
+	}
+	for (const { user } of users) {
+		let store: ReturnType<SigrunHost["stores"]["user"]>["settings"];
+		let raw: Record<string, unknown>;
+		try {
+			store = host.stores.user(user).settings;
+			raw = await store.get();
+		} catch (error) {
+			console.warn(`recall: could not read local providers for "${user}"`, error);
+			continue;
+		}
+		if (
+			raw.localProviders === undefined ||
+			raw.localProviders === null ||
+			raw.localProviders === "" ||
+			raw.localProviders === false ||
+			(Array.isArray(raw.localProviders) && raw.localProviders.length === 0)
+		) {
+			continue;
+		}
+		try {
+			await host.notify({ user, ...localProvidersMovedNotice() });
+		} catch (error) {
+			// A failed delivery must not remove the evidence: retry next boot.
+			console.warn(`recall: the local-providers notice failed for "${user}"`, error);
+			continue;
+		}
+		try {
+			const { localProviders: _removed, ...remaining } = raw;
+			await store.set(remaining);
+		} catch (error) {
+			// The notice was delivered but the removal failed. The next boot
+			// may repeat that notice, but never silently drops the record.
+			console.warn(`recall: could not remove local providers for "${user}"`, error);
+		}
+	}
+}
 
 export {
 	RecallIndexInput,
@@ -59,10 +105,7 @@ export interface FactoryDeps {
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
  *
- * Async for ONE reason: the v4 vectors migration stamps the vectors it
- * inherits from the pre-model schema with the model the OLD settings named,
- * and that label must be known before the database is first opened (which
- * happens lazily, from synchronous call sites).
+ * Async for the raw migration-label read only.
  */
 export default async function createRecall(
 	host: SigrunHost,
@@ -87,6 +130,11 @@ export default async function createRecall(
 		rawSettings = undefined;
 	}
 	const labelModel = rawSettings === undefined ? undefined : migrationLabel(rawSettings);
+	const isLocal = (model: string): boolean => host.models.isLocal(model);
+	const modelRef = (
+		model: { provider: string; modelId: string } | undefined,
+	): { provider: string; id: string } | undefined =>
+		model === undefined ? undefined : { provider: model.provider, id: model.modelId };
 	let database: RecallDb | undefined;
 	let services: {
 		searcher: ReturnType<typeof createSearcher>;
@@ -102,9 +150,14 @@ export default async function createRecall(
 	 * and the sweep is what finishes a switch anyway.
 	 */
 	let vectorGeneration = 0;
-	let searchModelCache: { signature: string; model: string } | undefined;
+	const searchModelCaches = new Map<
+		string,
+		{ signature: string; model: string }
+	>();
 	let noticeRaised = false;
 	let noticeAttempting = false;
+	let localProvidersSweepAttempting = false;
+	let localProvidersSweepRaised = false;
 	const warnEmbedding = createEmbeddingWarnings();
 
 	const embeddings: EmbeddingHost | undefined = host.embeddings;
@@ -188,6 +241,19 @@ export default async function createRecall(
 	}
 	maybeNoteEmbeddingsMoved();
 
+	function maybeMigrateLocalProviders(): void {
+		if (localProvidersSweepRaised || localProvidersSweepAttempting) return;
+		localProvidersSweepAttempting = true;
+		void migrateLocalProviders(host)
+			.then(() => {
+				localProvidersSweepRaised = true;
+			})
+			.finally(() => {
+				localProvidersSweepAttempting = false;
+			});
+	}
+	maybeMigrateLocalProviders();
+
 	interface SemanticDeps {
 		readonly embeddings: EmbeddingHost;
 		/** The live default: what the sweep re-embeds into. */
@@ -220,7 +286,10 @@ export default async function createRecall(
 	 * Every row is a candidate on its own coverage; the current default is
 	 * only the fallback for when NO row covers everything.
 	 */
-	function pickSemantic(rows: readonly EmbeddingModelRow[]): SemanticDeps | undefined {
+	function pickSemantic(
+		rows: readonly EmbeddingModelRow[],
+		owner: string | null,
+	): SemanticDeps | undefined {
 		if (embeddings === undefined) return undefined;
 		const current = rows.find((row) => row.default === true);
 		if (current === undefined) return undefined;
@@ -228,11 +297,13 @@ export default async function createRecall(
 			vectorGeneration,
 			rows.map((row) => [row.model, row.local, row.default === true]),
 		]);
-		if (searchModelCache?.signature === signature) {
+		const cacheKey = owner ?? "";
+		const cachedEntry = searchModelCaches.get(cacheKey);
+		if (cachedEntry?.signature === signature) {
 			// SAFETY: the cache signature covers every row's model, locality
 			// and default flag, so a cached model is still present and still
-			// describes the same coverage question.
-			const cached = rows.find((row) => row.model === searchModelCache!.model);
+			// describes the same coverage question for this owner.
+			const cached = rows.find((row) => row.model === cachedEntry.model);
 			if (cached !== undefined) {
 				return { embeddings, current, search: cached };
 			}
@@ -243,20 +314,24 @@ export default async function createRecall(
 		let search = current;
 		for (let index = rows.length - 1; index >= 0; index -= 1) {
 			const row = rows[index]!;
-			if (db().modelCoverage(row.model, row.local).complete) {
+			if (db().modelCoverage(row.model, row.local, owner).complete) {
 				search = row;
 				break;
 			}
 		}
-		searchModelCache = { signature, model: search.model };
+		searchModelCaches.set(cacheKey, { signature, model: search.model });
 		return { embeddings, current, search };
 	}
 
-	async function semantic(): Promise<SemanticDeps | undefined> {
+	async function semantic(user?: string): Promise<SemanticDeps | undefined> {
+		maybeMigrateLocalProviders();
 		if (embeddings === undefined) return undefined;
 		maybeNoteEmbeddingsMoved();
 		try {
-			return pickSemantic(await embeddings.list());
+			return pickSemantic(
+				await embeddings.list(user === undefined ? undefined : { user }),
+				user ?? null,
+			);
 		} catch (error) {
 			// The registry can transiently fail to answer; degrade to lexical
 			// and let the next call retry instead of caching the failure.
@@ -265,15 +340,16 @@ export default async function createRecall(
 		}
 	}
 
-	async function vectors() {
-		const semanticDeps = await semantic();
+	async function vectors(user?: string) {
+		const semanticDeps = await semantic(user);
 		if (semanticDeps === undefined) return undefined;
 		return createVectorArm(
 			semanticDeps.embeddings,
-			createSqliteVectorIndex(db(), semanticDeps.search.model),
+			createSqliteVectorIndex(db(), semanticDeps.search.model, user ?? null),
 			semanticDeps.search.model,
 			QUERY_TIMEOUT_MS,
 			warnEmbedding,
+			user,
 		);
 	}
 
@@ -283,7 +359,7 @@ export default async function createRecall(
 	const meta = (id: number) => host.conversations.meta(id as ConversationId);
 	const entry = (conversationId: number, entryId: number) =>
 		host.conversations.entry(conversationId as ConversationId, entryId as EntryId);
-	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true, localProviders: [] };
+	const DEFAULT_USER_SETTINGS: UserRecallSettings = { autoRecall: true };
 	/**
 	 * The per-user settings, defaulted and repaired by the declared handle.
 	 * A read failure keeps the directory user's defaults instead of losing
@@ -296,23 +372,35 @@ export default async function createRecall(
 			return DEFAULT_USER_SETTINGS;
 		}
 	};
-	const localProviders = async (user: string) => (await userSettings(user)).localProviders;
 
 	/**
-	 * The background re-embed: fill the CURRENT model's index, then drop
-	 * every other model's rows once the current one covers every item it
-	 * can embed. Doubled storage exists only during a switch, and the old
-	 * index is never lost item by item.
+	 * The background re-embed, one owner at a time: fill each CURRENT model's
+	 * index, then drop that owner's other-model rows once covered. Doubled
+	 * storage exists only during a switch, and an incomplete owner never
+	 * loses their old index or another owner's rows.
 	 */
 	const pendingVectors = async () => {
-		const semanticDeps = await semantic();
-		if (semanticDeps === undefined) return;
-		const { embeddings: surface, current } = semanticDeps;
-		await embedPending(db(), surface, current.model, current.local, entry, 500, warnEmbedding);
-		vectorGeneration += 1;
-		if (db().modelCoverage(current.model, current.local).complete) {
-			db().deleteVectorsExcept(current.model);
+		// Keep the existing backfill vectors trigger, but resolve one owner at
+		// a time. NULL is the system scope and must never reuse a user's rows.
+		for (const owner of db().itemOwners()) {
+			const semanticDeps = await semantic(owner ?? undefined);
+			if (semanticDeps === undefined) continue;
+			const { embeddings: surface, current } = semanticDeps;
+			await embedPending(
+				db(),
+				surface,
+				current.model,
+				current.local,
+				entry,
+				500,
+				warnEmbedding,
+				owner,
+			);
 			vectorGeneration += 1;
+			if (db().modelCoverage(current.model, current.local, owner).complete) {
+				db().deleteVectorsExcept(current.model, owner);
+				vectorGeneration += 1;
+			}
 		}
 	};
 	const backfillDeps = () => ({
@@ -323,16 +411,15 @@ export default async function createRecall(
 		now: deps.now ?? Date.now,
 	});
 	function getServices() {
+		maybeMigrateLocalProviders();
 		if (services !== undefined) return services;
 		const searcher = createSearcher({
 			db: db(),
 			meta,
 			entry,
-			userSettings,
+			isLocal,
 			artifactStore: artifactStore(),
-			vectors: {
-				query: async (text, limit) => (await vectors())?.query(text, limit) ?? [],
-			},
+			vectors,
 			now: deps.now ?? Date.now,
 		});
 		services = {
@@ -353,7 +440,7 @@ export default async function createRecall(
 						limit,
 						cursor,
 					),
-				localProviders,
+				isLocal,
 			}),
 		};
 		return services;
@@ -399,12 +486,11 @@ export default async function createRecall(
 								db: db(),
 								searcher: getServices().searcher,
 								meta: liveMeta,
-								model: agent?.model,
+								model: modelRef(agent?.model),
 								autoRecall: prefs.autoRecall,
 								internal: liveMeta.internal === true,
-								ownerLocalProviders: prefs.localProviders,
+								isLocal,
 								sourceMeta: (id) => meta(id),
-								sourceLocalProviders: localProviders,
 							});
 							return messages === undefined ? undefined : { messages };
 						} catch (error) {
@@ -423,6 +509,7 @@ export default async function createRecall(
 	};
 
 	return {
+		title: "Recall",
 		extension: defineExtension(extension),
 		publishedHooks: createPublishedHooks({
 			db,
@@ -439,7 +526,10 @@ export default async function createRecall(
 		],
 		routes: createRoutes({
 			searcher: {
-				search: (query, context, limit) => getServices().searcher.search(query, context, limit),
+				search: (query, context, limit) => {
+					maybeMigrateLocalProviders();
+					return getServices().searcher.search(query, context, limit);
+				},
 			},
 			sweep: () => runSweep(backfillDeps()),
 		}),

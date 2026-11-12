@@ -18,7 +18,7 @@ function taint(db, conversationId, item) {
         db.setTaint(conversationId, (db.cursor(conversationId) ?? 0) + 1);
     }
 }
-async function permitted(deps, current, item, provider) {
+async function permitted(deps, current, item, model) {
     if (!audienceCovers(current, { owner: item.owner ?? undefined }))
         return undefined;
     // User-owned documents have no conversation; the owner is the audience.
@@ -40,8 +40,7 @@ async function permitted(deps, current, item, provider) {
         !audienceCovers(current, meta)) {
         return undefined;
     }
-    const providers = item.owner === null ? [] : await deps.localProviders(item.owner).catch(() => []);
-    if (!mayRead(item.cls, provider === undefined ? undefined : { provider }, providers)) {
+    if (!mayRead(item.cls, model, deps.isLocal)) {
         return undefined;
     }
     return meta;
@@ -108,12 +107,13 @@ export function createTools(deps) {
                         ? ["doc"]
                         : undefined;
             const hits = await deps.searcher.search(args.query, {
+                user: current.owner,
                 current: {
                     conversationId,
                     owner: current.owner,
                     sharing: current.sharing,
                 },
-                model: model === undefined ? undefined : { provider: model.provider },
+                model: model === undefined ? undefined : { provider: model.provider, id: model.modelId },
                 includeJobs: true,
                 since: date(args.since),
                 until: date(args.until),
@@ -157,9 +157,11 @@ export function createTools(deps) {
             const conversationId = Number(api.conversationId);
             const current = await deps.meta(conversationId);
             const model = (await api.agent(context)).model;
-            const provider = model?.provider;
+            const currentModel = model === undefined
+                ? undefined
+                : { provider: model.provider, id: model.modelId };
             const item = await itemForHandle(deps.db, args.handle);
-            if (item === undefined || (await permitted(deps, current, item, provider)) === undefined) {
+            if (item === undefined || (await permitted(deps, current, item, currentModel)) === undefined) {
                 return output("Not available here.");
             }
             taint(deps.db, conversationId, item);
@@ -190,7 +192,7 @@ export function createTools(deps) {
                 return output("Not available here.");
             const nearby = deps.db.itemsForEntries(source, page.items.map((entry) => entry.id));
             for (const candidate of nearby) {
-                if ((await permitted(deps, current, candidate, provider)) === undefined) {
+                if ((await permitted(deps, current, candidate, currentModel)) === undefined) {
                     return output("Not available here.");
                 }
             }

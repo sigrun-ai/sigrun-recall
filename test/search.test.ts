@@ -1,8 +1,16 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
+import type { SigrunHost } from "@sigrun/sigrun/extension";
 import { describe, expect, it } from "vitest";
 
 import { RecallDb, type ItemRow } from "../src/db.js";
+import createRecall from "../src/index.js";
+import type { EmbeddingModelRow } from "../src/vectors.js";
+import { withDeclaredSettings } from "./fake-host.js";
 import {
   createSearcher,
   type SearchContext,
@@ -57,7 +65,7 @@ function item(
 function context(overrides: Partial<SearchContext> = {}): SearchContext {
   return {
     current: { conversationId: 1, owner: "alice" },
-    model: { provider: "acme-local" },
+    model: { provider: "acme-local", id: "chat-1" },
     includeJobs: false,
     ...overrides,
   };
@@ -68,7 +76,7 @@ function setup(
   options: {
     item?: Partial<Omit<ItemRow, "id">>;
     meta?: SessionMeta;
-    localProviders?: string[];
+    localModels?: string[];
     now?: number;
   } = {},
 ): { db: RecallDb; searcher: Searcher; metas: Map<number, SessionMeta> } {
@@ -94,16 +102,168 @@ function setup(
     },
     entry: async (conversationId, entryId) =>
       entries.get(`${conversationId}:${entryId}`),
-    userSettings: async () => ({
-      autoRecall: true,
-      localProviders: options.localProviders ?? ["acme-local"],
-    }),
+    isLocal: (model) =>
+      (options.localModels ?? ["acme-local/chat-1"]).includes(model),
     now: () => options.now ?? NOW,
   });
   return { db, searcher, metas };
 }
 
+interface PerUserSearchOptions {
+  bobDefault: string;
+  bobVector: string;
+  concurrent: boolean;
+}
+
+/** Drive the production route with two owners and two distinct vector spaces. */
+async function perUserSearch(options: PerUserSearchOptions) {
+  const root = await mkdtemp(join(tmpdir(), "recall-search-owner-"));
+  const ALICE_MODEL = "acme-embed/alice";
+  const BOB_MODEL = "acme-embed/bob";
+  const SYSTEM_MODEL = "acme-embed/system";
+  const db = RecallDb.open(join(root, "recall.db"));
+  for (const [conversationId, owner, text] of [
+    [1, "alice", "first owner's private note"],
+    [2, "bob", "second owner's private note"],
+  ] as const) {
+    const id = db.insertItem(
+      {
+        conversationId,
+        owner,
+        kind: "turn",
+        entryId: 1,
+        messageIndex: 0,
+        blockIndex: 0,
+        offset: 0,
+        length: text.length,
+        artifact: null,
+        doc: null,
+        job: false,
+        cls: "normal",
+        at: NOW,
+        title: null,
+      },
+      text,
+    );
+    const model = owner === "alice" ? ALICE_MODEL : options.bobVector;
+    // Only that owner's item has a vector in this space. An unscoped index
+    // therefore cannot accidentally produce the same hit.
+    db.upsertVector(id!, model, new Float32Array([1]));
+  }
+  db.close();
+
+  const records = [
+    entry(1, 1, "first owner's private note"),
+    entry(1, 2, "second owner's private note"),
+  ];
+  const listUsers: (string | undefined)[] = [];
+  const embedCalls: { user?: string; model?: string }[] = [];
+  let releaseAlice: (() => void) | undefined;
+  const aliceGate = new Promise<void>((resolve) => {
+    releaseAlice = resolve;
+  });
+  const result = await createRecall(
+    withDeclaredSettings({
+      stores: {
+        paths: { data: root },
+        settings: { get: async () => ({}) },
+        user: () => ({ settings: { get: async () => ({}) } }),
+      },
+      users: { list: async () => [] },
+      conversations: {
+        meta: async (id: number) => meta({ owner: id === 1 ? "alice" : "bob" }),
+        entry: async (id: number, entryId: number) =>
+          records.find((record) => record.conversationId === id && record.id === entryId),
+      },
+      embeddings: {
+        list: async (opts?: { user?: string }) => {
+          listUsers.push(opts?.user);
+          let current = SYSTEM_MODEL;
+          if (opts?.user === "alice") current = ALICE_MODEL;
+          if (opts?.user === "bob") current = options.bobDefault;
+          return [ALICE_MODEL, BOB_MODEL, SYSTEM_MODEL].map((model): EmbeddingModelRow => ({
+            model,
+            provider: "acme-embed",
+            dimensions: 1,
+            local: false,
+            default: model === current,
+            status: "ready",
+          }));
+        },
+        embed: async (texts: readonly string[], opts?: { user?: string; model?: string }) => {
+          embedCalls.push({ user: opts?.user, model: opts?.model });
+          if (options.concurrent && opts?.user === "alice") await aliceGate;
+          return {
+            ok: true as const,
+            model: opts?.model ?? SYSTEM_MODEL,
+            dimensions: 1,
+            vectors: texts.map(() => new Float32Array([1])),
+          };
+        },
+      },
+    } as unknown as SigrunHost),
+  );
+  const route = result.routes!.find((candidate) => candidate.path === "search")!;
+  const search = async (user: string) => {
+    const response = await route.handler(
+      new Request("https://example.invalid/search?q=semantic+match"),
+      { principal: { user, admin: false } } as never,
+    );
+    return (await response.json()) as { hits: { conversationId: number }[] };
+  };
+  return {
+    result,
+    search,
+    listUsers,
+    embedCalls,
+    releaseAlice: () => releaseAlice?.(),
+    close: async () => {
+      await result.harnessShutdown?.({} as never, {} as never);
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
 describe("search", () => {
+  it("concurrent searches use each caller's model", async () => {
+    const rig = await perUserSearch({
+      bobDefault: "acme-embed/bob",
+      bobVector: "acme-embed/bob",
+      concurrent: true,
+    });
+    try {
+      const alice = rig.search("alice");
+      // Alice is now inside her gated embedding call. Bob must still resolve
+      // and embed under BOB_MODEL, and must match only his own vector.
+      const bob = await rig.search("bob");
+      expect(bob.hits.map((hit) => hit.conversationId)).toEqual([2]);
+      expect(rig.embedCalls.find((call) => call.user === "bob")?.model).toBe("acme-embed/bob");
+      rig.releaseAlice();
+      const aliceBody = await alice;
+      expect(aliceBody.hits.map((hit) => hit.conversationId)).toEqual([1]);
+      expect(rig.embedCalls.find((call) => call.user === "alice")?.model).toBe("acme-embed/alice");
+    } finally {
+      rig.releaseAlice();
+      await rig.close();
+    }
+  });
+
+  it("a user with no override shares the system model's vectors", async () => {
+    const rig = await perUserSearch({
+      bobDefault: "acme-embed/system",
+      bobVector: "acme-embed/system",
+      concurrent: false,
+    });
+    try {
+      const body = await rig.search("bob");
+      expect(body.hits.map((hit) => hit.conversationId)).toEqual([2]);
+      expect(rig.listUsers).toContain("bob");
+      expect(rig.embedCalls).toContainEqual({ user: "bob", model: "acme-embed/system" });
+    } finally {
+      await rig.close();
+    }
+  });
+
   it('finds a past turn by a stemmed word ("clinics" matches "clinic")', async () => {
     const { searcher } = setup("the clinic is open");
     expect(await searcher.search("clinics", context(), 10)).toHaveLength(1);
@@ -149,16 +309,16 @@ describe("search", () => {
     expect(await searcher.search("clinic", asBob, 10)).toEqual([]);
   });
 
-  it("a local-only item is returned only when ctx.model.provider is in the item owner's localProviders", async () => {
+  it("a local-only item is returned only when the admin marks its full model id local", async () => {
     const { searcher } = setup("local clinic", {
       item: { cls: "local-only" },
-      localProviders: ["acme-local"],
+      localModels: ["acme-local/chat-1"],
     });
     expect(await searcher.search("clinic", context(), 10)).toHaveLength(1);
     expect(
       await searcher.search(
         "clinic",
-        context({ model: { provider: "acme-cloud" } }),
+        context({ model: { provider: "acme-cloud", id: "chat-1" } }),
         10,
       ),
     ).toEqual([]);
@@ -191,9 +351,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => entry(1, 1, "clinic"),
-      userSettings: async () => {
-        throw new Error("unknown user");
-      },
+      isLocal: () => false,
       now: () => NOW,
     });
     expect(await searcher.search("clinic", context(), 10)).toHaveLength(1);
@@ -215,7 +373,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async (_conversationId, entryId) => entry(entryId, 1, "clinic"),
-      userSettings: async () => ({ autoRecall: true, localProviders: [] }),
+      isLocal: () => false,
       now: () => NOW,
     });
     const hits = await searcher.search("clinic", context(), 10);
@@ -249,10 +407,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     const hits = await searcher.search("harbourside", context(), 10);
@@ -285,10 +440,7 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     const sharedWithBob = context({
@@ -304,7 +456,7 @@ describe("search", () => {
     db.close();
   });
 
-  it("a local-only doc is withheld from acme-cloud and shown to acme-local when alice lists acme-local", async () => {
+  it("a local-only doc is withheld from a non-local model and shown to a local one", async () => {
     const db = RecallDb.open(":memory:");
     db.upsertDoc(
       {
@@ -325,16 +477,13 @@ describe("search", () => {
       db,
       meta: async () => meta(),
       entry: async () => undefined,
-      userSettings: async () => ({
-        autoRecall: true,
-        localProviders: ["acme-local"],
-      }),
+      isLocal: (model) => model === "acme-local/chat-1",
       now: () => NOW,
     });
     expect(
       await searcher.search(
         "harbourside",
-        context({ model: { provider: "acme-cloud" } }),
+        context({ model: { provider: "acme-cloud", id: "chat-1" } }),
         10,
       ),
     ).toEqual([]);

@@ -92,16 +92,16 @@ export declare class RecallDb {
     /** Item ids matching a trigram FTS5 expression, in match order. */
     matchTrigram(expression: string): number[];
     upsertVector(itemId: number, model: string, vec: Float32Array): void;
-    listVectorsPage(model: string, after: number, limit: number): {
+    itemOwners(): readonly (string | null)[];
+    listVectorsPage(model: string, after: number, limit: number, owner?: string | null): {
         itemId: number;
         vec: Buffer;
     }[];
     /**
-     * Drop every vector that is not the given model's — the switch's cleanup:
-     * only called once the new model covers every item, so the old index is
-     * never lost item by item.
+     * Drop one owner's vectors that are not the given model's — the switch's
+     * cleanup: only called once the new model covers that owner's items.
      */
-    deleteVectorsExcept(model: string): void;
+    deleteVectorsExcept(model: string, owner?: string | null): void;
     state(key: string): string | undefined;
     setState(key: string, value: string): void;
     /**
@@ -110,7 +110,7 @@ export declare class RecallDb {
      * filtered out by `includeLocalOnly`, not treated as pending. `after`
      * pages by item id for {@link modelCoverage}'s bounded scan.
      */
-    listUnembeddedItems(model: string, limit: number, includeLocalOnly: boolean, after?: number): ItemRow[];
+    listUnembeddedItems(model: string, limit: number, includeLocalOnly: boolean, after?: number, owner?: string | null): ItemRow[];
     /**
      * Whether the sweep could embed this item at all: a document item whose
      * document still exists, or a turn/tool item whose entry is addressable.
@@ -136,7 +136,7 @@ export declare class RecallDb {
      * moment ONE embeddable item lacks a vector, and gives up (also `false`)
      * rather than guess when the dangling backlog exceeds its bounded scan.
      */
-    modelCoverage(model: string, includeLocalOnly: boolean): {
+    modelCoverage(model: string, includeLocalOnly: boolean, owner?: string | null): {
         complete: boolean;
     };
     cursor(conversationId: number): number | undefined;

@@ -210,11 +210,12 @@ export function createPublishedHooks(
 			const hits = await deps.searcher().search(
 				input.query,
 				{
+					user: call.user,
 					current,
 					model:
 						input.model === undefined
 							? undefined
-							: { provider: input.model.provider },
+							: { provider: input.model.provider, id: input.model.modelId },
 					includeJobs: true,
 					kinds: input.kinds,
 				},

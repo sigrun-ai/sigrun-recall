@@ -74,14 +74,14 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * the schema against (settings rework); development uses core's workspace
  * through a file: dev link. */
 const HOST_MODULE_PINS = {
-	"@sigrun/sigrun": ">=0.13.0",
+	"@sigrun/sigrun": ">=0.15.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
 	typebox: "1.3.27",
 	// Every shared line since runtime value imports landed, through the
 	// shared version bundled by the minimum supported core.
-	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0",
+	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {

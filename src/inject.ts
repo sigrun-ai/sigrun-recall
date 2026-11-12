@@ -26,13 +26,13 @@ export interface InjectDeps {
 	db: RecallDb;
 	searcher: Searcher;
 	meta: SessionMeta;
-	model: { provider: string } | undefined;
+	model: { provider: string; id: string } | undefined;
 	autoRecall: boolean;
 	internal: boolean;
-	ownerLocalProviders: readonly string[];
-	/** Live source policy readers; missing readers fail closed for sourced blocks. */
+	/** The admin's live locality switch; unknown sources fail closed. */
+	isLocal: (model: string) => boolean;
+	/** Live source metadata; a missing reader fails closed for sourced blocks. */
 	sourceMeta?: (conversationId: number) => Promise<SessionMeta>;
-	sourceLocalProviders?: (user: string) => Promise<readonly string[]>;
 }
 
 function textOf(message: UserMessage): string {
@@ -89,6 +89,7 @@ export async function applyRecall(
 			const hits = await deps.searcher.search(
 				`${textOf(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
 				{
+					user: deps.meta.owner,
 					current: {
 						conversationId: deps.conversationId,
 						owner: deps.meta.owner,
@@ -110,21 +111,18 @@ export async function applyRecall(
 
 	const readable = new Map<string, boolean>();
 	for (const [key, injection] of stored) {
-		let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.ownerLocalProviders);
+		let allowed = injection.cls !== "local-only" || mayRead(injection.cls, deps.model, deps.isLocal);
 		for (const itemId of injection.sources) {
 			const item = deps.db.item(itemId);
-			if (item === undefined || deps.sourceLocalProviders === undefined) {
+			if (item === undefined) {
 				allowed = false;
 				break;
 			}
-			const providers = item.owner === null
-				? []
-				: await deps.sourceLocalProviders(item.owner).catch(() => []);
 			if (item.conversationId === null) {
 				// User-owned documents have no conversation; the owner is the audience.
 				if (
 					!audienceCovers(deps.meta, { owner: item.owner ?? undefined }) ||
-					!mayRead(item.cls, deps.model, providers)
+					!mayRead(item.cls, deps.model, deps.isLocal)
 				) {
 					allowed = false;
 					break;
@@ -141,7 +139,7 @@ export async function applyRecall(
 				source.internal === true ||
 				source.deleted === true ||
 				!audienceCovers(deps.meta, source) ||
-				!mayRead(item.cls, deps.model, providers)
+				!mayRead(item.cls, deps.model, deps.isLocal)
 			) {
 				allowed = false;
 				break;
