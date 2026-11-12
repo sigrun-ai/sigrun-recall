@@ -6,7 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Long conversations are divided into sittings after a sufficiently long pause
+  and enough accumulated history. New requests retain the current sitting and
+  previous exchange, with a table of contents and recall making earlier
+  sittings reachable without keeping their full history in context. Includes
+  an offline Hermes eval harness (`scripts/sittings-eval.ts`) for return counts
+  and context-token distributions.
+- Sitting titles, table-of-contents lines and transcript dividers are added
+  where the core supports `setAutoName` and `markContext`; compaction stays
+  within the current sitting and never re-summarizes earlier sittings.
+
 ### Changed
+
+- Automatic recall in a fork no longer re-injects the fork's own inherited
+  history: material already in context is excluded. Pre-boundary material from
+  the conversation and its ancestors remains recallable.
 
 - Embedding models are now resolved per owner. The existing backfill vectors
   step enumerates item owners, embeds each owner's pending items with their
