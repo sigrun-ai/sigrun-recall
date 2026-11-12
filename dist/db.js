@@ -3,6 +3,42 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { splitText } from "./passages.js";
 import { redact } from "./redact.js";
+const SITTINGS_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS sitting_decisions (
+		conversationId INTEGER NOT NULL,
+		entryId INTEGER NOT NULL,
+		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
+		PRIMARY KEY (conversationId, entryId)
+	);
+	CREATE TABLE IF NOT EXISTS sittings (
+		conversationId INTEGER NOT NULL,
+		startEntryId INTEGER NOT NULL,
+		startAt INTEGER NOT NULL,
+		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
+		boundaryText TEXT NOT NULL DEFAULT '',
+		previous TEXT,
+		block TEXT,
+		title TEXT,
+		titleState TEXT NOT NULL DEFAULT 'none' CHECK (titleState IN ('pending', 'done', 'failed', 'none')),
+		PRIMARY KEY (conversationId, startEntryId)
+	);
+	CREATE TABLE IF NOT EXISTS sitting_lines (
+		conversationId INTEGER NOT NULL,
+		startEntryId INTEGER NOT NULL,
+		text TEXT NOT NULL,
+		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+		coversThrough INTEGER NOT NULL,
+		sealed INTEGER NOT NULL CHECK (sealed IN (0, 1)),
+		PRIMARY KEY (conversationId, startEntryId)
+	);
+	CREATE TABLE IF NOT EXISTS month_lines (
+		conversationId INTEGER NOT NULL,
+		month TEXT NOT NULL,
+		text TEXT NOT NULL,
+		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
+		PRIMARY KEY (conversationId, month)
+	);
+`;
 const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS items (
 		id INTEGER PRIMARY KEY,
@@ -86,40 +122,7 @@ const SCHEMA = `
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS sitting_decisions (
-		conversationId INTEGER NOT NULL,
-		entryId INTEGER NOT NULL,
-		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
-		PRIMARY KEY (conversationId, entryId)
-	);
-	CREATE TABLE IF NOT EXISTS sittings (
-		conversationId INTEGER NOT NULL,
-		startEntryId INTEGER NOT NULL,
-		startAt INTEGER NOT NULL,
-		boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
-		boundaryText TEXT NOT NULL DEFAULT '',
-		previous TEXT,
-		block TEXT,
-		title TEXT,
-		titleState TEXT NOT NULL DEFAULT 'none' CHECK (titleState IN ('pending', 'done', 'failed', 'none')),
-		PRIMARY KEY (conversationId, startEntryId)
-	);
-	CREATE TABLE IF NOT EXISTS sitting_lines (
-		conversationId INTEGER NOT NULL,
-		startEntryId INTEGER NOT NULL,
-		text TEXT NOT NULL,
-		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
-		coversThrough INTEGER NOT NULL,
-		sealed INTEGER NOT NULL CHECK (sealed IN (0, 1)),
-		PRIMARY KEY (conversationId, startEntryId)
-	);
-	CREATE TABLE IF NOT EXISTS month_lines (
-		conversationId INTEGER NOT NULL,
-		month TEXT NOT NULL,
-		text TEXT NOT NULL,
-		cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
-		PRIMARY KEY (conversationId, month)
-	);
+	${SITTINGS_SCHEMA}
 	CREATE TABLE IF NOT EXISTS schema_version (
 		version INTEGER NOT NULL
 	);
@@ -299,42 +302,7 @@ export class RecallDb {
                 // `IF NOT EXISTS` makes this idempotent against SCHEMA's fresh
                 // create, so a fresh database stamped through v4 also passes
                 // through here cleanly.
-                this.db.exec(`
-					CREATE TABLE IF NOT EXISTS sitting_decisions (
-						conversationId INTEGER NOT NULL,
-						entryId INTEGER NOT NULL,
-						boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
-						PRIMARY KEY (conversationId, entryId)
-					);
-					CREATE TABLE IF NOT EXISTS sittings (
-						conversationId INTEGER NOT NULL,
-						startEntryId INTEGER NOT NULL,
-						startAt INTEGER NOT NULL,
-						boundary INTEGER NOT NULL CHECK (boundary IN (0, 1)),
-						boundaryText TEXT NOT NULL DEFAULT '',
-						previous TEXT,
-						block TEXT,
-						title TEXT,
-						titleState TEXT NOT NULL DEFAULT 'none' CHECK (titleState IN ('pending', 'done', 'failed', 'none')),
-						PRIMARY KEY (conversationId, startEntryId)
-					);
-					CREATE TABLE IF NOT EXISTS sitting_lines (
-						conversationId INTEGER NOT NULL,
-						startEntryId INTEGER NOT NULL,
-						text TEXT NOT NULL,
-						cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
-						coversThrough INTEGER NOT NULL,
-						sealed INTEGER NOT NULL CHECK (sealed IN (0, 1)),
-						PRIMARY KEY (conversationId, startEntryId)
-					);
-					CREATE TABLE IF NOT EXISTS month_lines (
-						conversationId INTEGER NOT NULL,
-						month TEXT NOT NULL,
-						text TEXT NOT NULL,
-						cls TEXT NOT NULL CHECK (cls IN ('normal', 'local-only')),
-						PRIMARY KEY (conversationId, month)
-					);
-				`);
+                this.db.exec(SITTINGS_SCHEMA);
                 this.db.prepare("UPDATE schema_version SET version = 5").run();
             }
             this.db.exec("COMMIT");
@@ -802,7 +770,9 @@ export class RecallDb {
                 this.db
                     .prepare(`INSERT INTO sitting_lines (conversationId, startEntryId, text, cls, coversThrough, sealed)
 						 VALUES (?, ?, ?, ?, ?, 1)
-						 ON CONFLICT(conversationId, startEntryId) DO NOTHING`)
+						 ON CONFLICT(conversationId, startEntryId) DO UPDATE SET
+						 text = excluded.text, cls = excluded.cls, coversThrough = excluded.coversThrough, sealed = 1
+						 WHERE sitting_lines.sealed = 0`)
                     .run(row.conversationId, sealPrevious.startEntryId, sealPrevious.line.text, sealPrevious.line.cls, sealPrevious.line.coversThrough);
             }
             this.db.exec("COMMIT");

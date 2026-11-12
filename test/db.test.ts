@@ -510,7 +510,13 @@ describe("v5 schema — sittings", () => {
     seed.close();
     const raw = new DatabaseSync(path);
     try {
-      raw.exec("UPDATE schema_version SET version = 4");
+      raw.exec(`
+        DROP TABLE sitting_decisions;
+        DROP TABLE sittings;
+        DROP TABLE sitting_lines;
+        DROP TABLE month_lines;
+        UPDATE schema_version SET version = 4;
+      `);
     } finally {
       raw.close();
     }
@@ -580,6 +586,25 @@ describe("v5 schema — sittings", () => {
     const db = RecallDb.open(path);
     openDatabases.push(db);
 
+    const raw = new DatabaseSync(path);
+    try {
+      const tables = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('sitting_decisions', 'sittings', 'sitting_lines', 'month_lines')
+           ORDER BY name`,
+        )
+        .all() as { name: string }[];
+      expect(tables.map(({ name }) => name)).toEqual([
+        "month_lines",
+        "sitting_decisions",
+        "sitting_lines",
+        "sittings",
+      ]);
+    } finally {
+      raw.close();
+    }
+
     // The new tables accept writes.
     expect(db.decision(1, 10)).toBeUndefined();
     db.putDecision(1, 10, false);
@@ -647,6 +672,33 @@ describe("v5 schema — sittings", () => {
 
     // The decision stays as the first call wrote it.
     expect(db.decision(1, 10)).toBe(true);
+  });
+
+  it("createBoundary seals an existing draft and a repeated call changes nothing", () => {
+    const db = openMemory();
+    db.putSitting(sittingRow({ startEntryId: 10 }));
+    db.putLineDraft(lineRow({ startEntryId: 10, text: "draft text", coversThrough: 15 }));
+
+    const first = db.createBoundary(
+      sittingRow({ startEntryId: 20, boundary: true, title: "boundary-title" }),
+      { startEntryId: 10, line: { text: "sealed draft", cls: "normal", coversThrough: 19 } },
+    );
+    expect(first).toBe(true);
+    expect(db.lines([1])).toEqual([
+      lineRow({ startEntryId: 10, text: "sealed draft", coversThrough: 19, sealed: true }),
+    ]);
+
+    const second = db.createBoundary(
+      sittingRow({ startEntryId: 20, boundary: true, title: "overwritten" }),
+      { startEntryId: 10, line: { text: "different", cls: "local-only", coversThrough: 99 } },
+    );
+    expect(second).toBe(false);
+    expect(db.lines([1])).toEqual([
+      lineRow({ startEntryId: 10, text: "sealed draft", coversThrough: 19, sealed: true }),
+    ]);
+    expect(db.sittings([1])).toHaveLength(2);
+    expect(db.sittings([1])[1]!.title).toBe("boundary-title");
+    expect(db.decision(1, 20)).toBe(true);
   });
 
   it("createBoundary with undefined sealPrevious does not seal a line", () => {
