@@ -121,6 +121,17 @@ describe("artifacts", () => {
     ).toBeUndefined();
   });
 
+  it("a load_skill result is never externalized, whatever its size", async () => {
+    const { deps } = await setup();
+    expect(
+      externalize(
+        result("x".repeat(60_000)),
+        { ...call(), name: "load_skill", arguments: { name: "acme-cleanup" } } as ToolHookCall,
+        deps(),
+      ),
+    ).toBeUndefined();
+  });
+
   it("a fresh store resolves the same artifact and multibyte outline offsets", async () => {
     const { db, dir, store } = await setup();
     const text = "界".repeat(3000);

@@ -22,7 +22,9 @@ export declare function outline(text: string): {
 }[];
 /** Render the retained head and bounded navigation stub for an artifact. */
 export declare function renderStub(text: string, handle: string, headBytes: 6144): string;
-/** Replace only large, complete top-level tool output with an artifact stub. */
+/** Replace only large, complete top-level tool output with an artifact stub.
+ *  A `load_skill` result is instructions the model must follow whole, so it
+ *  is never cut to a head (core's `sigrun.skills` tool). */
 export declare function externalize(result: ToolExecutionResult, call: ToolHookCall, deps: {
     store: ArtifactStore;
     thresholdBytes: number;
