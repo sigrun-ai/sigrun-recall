@@ -111,9 +111,12 @@ function alreadyPartial(result) {
     const record = structured;
     return record.truncated === true || record.fullOutputPath !== undefined;
 }
-/** Replace only large, complete top-level tool output with an artifact stub. */
+/** Replace only large, complete top-level tool output with an artifact stub.
+ *  A `load_skill` result is instructions the model must follow whole, so it
+ *  is never cut to a head (core's `sigrun.skills` tool). */
 export function externalize(result, call, deps) {
     if (call.parent !== undefined ||
+        call.name === "load_skill" ||
         result.isError === true ||
         alreadyPartial(result) ||
         result.output === undefined) {
