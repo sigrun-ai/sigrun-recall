@@ -115,14 +115,23 @@ export async function embedClass(embeddings, upsert, batch, confidentiality, mod
 export async function embedPending(db, embeddings, model, modelIsLocal, entry, limit = 500, warn = DEFAULT_EMBEDDING_WARNINGS, owner) {
     const normal = [];
     const local = [];
+    // Group the pass by source entry: ONE resolution per
+    // (conversation, entry), never one per passage. A large attachment
+    // contributes thousands of passages, and re-reading its entry per pass
+    // re-parsed a multi-megabyte record once per row — enough to exhaust
+    // the process heap on a boot-time backlog. Each entry is resolved,
+    // matched and released before the next, so this holds ONE entry at a
+    // time rather than a cache of them.
+    // Docs are the other shape (`docText` reads the stored text, no entry).
+    const byEntry = new Map();
     for (const item of db.listUnembeddedItems(model, limit, modelIsLocal, 0, owner)) {
-        const target = item.cls === "local-only" ? local : normal;
         if (item.kind === "doc") {
             if (item.doc === null)
                 continue;
             const text = db.docText(item.doc, item.offset, item.length);
-            if (text !== undefined)
-                target.push({ id: item.id, text });
+            if (text === undefined)
+                continue;
+            (item.cls === "local-only" ? local : normal).push({ id: item.id, text });
             continue;
         }
         if (item.entryId === null ||
@@ -130,14 +139,35 @@ export async function embedPending(db, embeddings, model, modelIsLocal, entry, l
             item.conversationId === null) {
             continue;
         }
-        const record = await entry(item.conversationId, item.entryId);
+        const key = `${item.conversationId}:${item.entryId}`;
+        const group = byEntry.get(key);
+        if (group === undefined)
+            byEntry.set(key, [item]);
+        else
+            group.push(item);
+    }
+    for (const group of byEntry.values()) {
+        const first = group[0];
+        if (first === undefined)
+            continue;
+        const record = await entry(first.conversationId, first.entryId);
         if (record === undefined)
             continue;
-        const passage = passagesOf(record).find((candidate) => candidate.messageIndex === item.messageIndex &&
-            candidate.blockIndex === item.blockIndex &&
-            candidate.offset === item.offset);
-        if (passage !== undefined)
-            target.push({ id: item.id, text: redact(passage.text) });
+        // `passagesOf` walks every message of the entry, so index it once
+        // for the whole group instead of scanning per item.
+        const byPassage = new Map();
+        for (const passage of passagesOf(record)) {
+            byPassage.set(`${passage.messageIndex}|${passage.blockIndex}|${passage.offset}`, passage);
+        }
+        for (const item of group) {
+            const passage = byPassage.get(`${item.messageIndex}|${item.blockIndex}|${item.offset}`);
+            if (passage === undefined)
+                continue;
+            (item.cls === "local-only" ? local : normal).push({
+                id: item.id,
+                text: redact(passage.text),
+            });
+        }
     }
     const upsert = (itemId, storedModel, vec) => db.upsertVector(itemId, storedModel, vec);
     // Same containment as the capture page: the sweep is awaited by a job

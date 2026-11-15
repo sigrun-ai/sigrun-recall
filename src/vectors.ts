@@ -1,8 +1,8 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 
-import type { RecallDb } from "./db.js";
-import { passagesOf } from "./passages.js";
+import type { ItemRow, RecallDb } from "./db.js";
+import { passagesOf, type Passage } from "./passages.js";
 import { redact } from "./redact.js";
 import type { VectorArm } from "./search.js";
 
@@ -197,12 +197,21 @@ export async function embedPending(
 ): Promise<void> {
 	const normal: { id: number; text: string }[] = [];
 	const local: { id: number; text: string }[] = [];
+	// Group the pass by source entry: ONE resolution per
+	// (conversation, entry), never one per passage. A large attachment
+	// contributes thousands of passages, and re-reading its entry per pass
+	// re-parsed a multi-megabyte record once per row — enough to exhaust
+	// the process heap on a boot-time backlog. Each entry is resolved,
+	// matched and released before the next, so this holds ONE entry at a
+	// time rather than a cache of them.
+	// Docs are the other shape (`docText` reads the stored text, no entry).
+	const byEntry = new Map<string, ItemRow[]>();
 	for (const item of db.listUnembeddedItems(model, limit, modelIsLocal, 0, owner)) {
-		const target = item.cls === "local-only" ? local : normal;
 		if (item.kind === "doc") {
 			if (item.doc === null) continue;
 			const text = db.docText(item.doc, item.offset, item.length);
-			if (text !== undefined) target.push({ id: item.id, text });
+			if (text === undefined) continue;
+			(item.cls === "local-only" ? local : normal).push({ id: item.id, text });
 			continue;
 		}
 		if (
@@ -212,15 +221,35 @@ export async function embedPending(
 		) {
 			continue;
 		}
-		const record = await entry(item.conversationId, item.entryId);
+		const key = `${item.conversationId}:${item.entryId}`;
+		const group = byEntry.get(key);
+		if (group === undefined) byEntry.set(key, [item]);
+		else group.push(item);
+	}
+	for (const group of byEntry.values()) {
+		const first = group[0];
+		if (first === undefined) continue;
+		const record = await entry(first.conversationId!, first.entryId!);
 		if (record === undefined) continue;
-		const passage = passagesOf(record).find(
-			(candidate) =>
-				candidate.messageIndex === item.messageIndex &&
-				candidate.blockIndex === item.blockIndex &&
-				candidate.offset === item.offset,
-		);
-		if (passage !== undefined) target.push({ id: item.id, text: redact(passage.text) });
+		// `passagesOf` walks every message of the entry, so index it once
+		// for the whole group instead of scanning per item.
+		const byPassage = new Map<string, Passage>();
+		for (const passage of passagesOf(record)) {
+			byPassage.set(
+				`${passage.messageIndex}|${passage.blockIndex}|${passage.offset}`,
+				passage,
+			);
+		}
+		for (const item of group) {
+			const passage = byPassage.get(
+				`${item.messageIndex}|${item.blockIndex}|${item.offset}`,
+			);
+			if (passage === undefined) continue;
+			(item.cls === "local-only" ? local : normal).push({
+				id: item.id,
+				text: redact(passage.text),
+			});
+		}
 	}
 	const upsert = (itemId: number, storedModel: string, vec: Float32Array) =>
 		db.upsertVector(itemId, storedModel, vec);

@@ -97,6 +97,48 @@ describe("vectors", () => {
     });
     db.close();
   });
+  it("reads each source entry ONCE per pass, however many passages it has", async () => {
+    // An attachment entry carries thousands of passages. Resolving the
+    // entry per passage re-parsed a multi-megabyte record once per row and
+    // exhausted the process heap at boot.
+    const db = RecallDb.open(":memory:");
+    const big = `${"x".repeat(1999)}\n`.repeat(20);
+    const row = (offset: number) => ({
+      conversationId: 1,
+      owner: "alice",
+      kind: "turn" as const,
+      entryId: 7,
+      messageIndex: 0,
+      blockIndex: 0,
+      offset,
+      length: 2000,
+      artifact: null,
+      doc: null,
+      job: false,
+      cls: "normal" as const,
+      at: 1_700_000_000_000,
+      title: null,
+    });
+    for (let offset = 0; offset < big.length; offset += 2000)
+      db.insertItem(row(offset), big.slice(offset, offset + 2000));
+    expect(db.listUnembeddedItems(MODEL, 500, false, 0).length).toBeGreaterThan(1);
+    const reads: number[] = [];
+    await embedPending(
+      db,
+      fakeEmbeddings(oneVector),
+      MODEL,
+      false,
+      async (_conversationId, entryId) => {
+        reads.push(entryId);
+        return entry(big);
+      },
+      500,
+    );
+    // One read for the entry, not one per passage.
+    expect(reads).toEqual([7]);
+    db.close();
+  });
+
   it("a local-only item is not embedded by a non-local model", async () => {
     const db = RecallDb.open(":memory:");
     db.setTaint(1, 1);
