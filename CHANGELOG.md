@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-11-15
+
+### Fixed
+
+- The embedding sweep reads each source entry ONCE per pass. `embedPending`
+  resolved the entry for every passage row, so a large attachment entry
+  (6.5 MB, 3,352 passages) was re-read and re-parsed once per row and
+  exhausted the host's heap during the boot-time backfill — sigrun
+  crash-looped. The pass now groups by source entry and releases each one
+  before the next, keeping the peak at one entry rather than a cache.
+
+### Changed
+
+- The `@sigrun/shared` peer gains the `0.18.0` line.
+
 ## [0.5.1] - 2026-11-14
 
 ### Fixed

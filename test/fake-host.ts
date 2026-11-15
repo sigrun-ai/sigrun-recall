@@ -43,6 +43,15 @@ function checked<S, U>(
 			onRead();
 			return checkStoredSettings(declaration.schema, await shared()).value as S;
 		},
+		// Core 0.18.0's contract member: system settings with one user's
+		// valid overrides applied. Recall declares no overridable leaf, so
+		// no override can ever apply — the effective read IS the system
+		// check. (A schema that later marks a key overridable must widen
+		// this the way the gateway's fake did.)
+		effective: async (_user: string) => {
+			onRead();
+			return checkStoredSettings(declaration.schema, await shared()).value as S;
+		},
 		user: (user: string) => ({
 			get: async () => {
 				if (declaration.userSchema === undefined) {
