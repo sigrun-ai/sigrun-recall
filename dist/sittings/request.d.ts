@@ -1,4 +1,5 @@
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, UserMessage } from "@earendil-works/pi-ai";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { Confidentiality, RecallDb } from "../db.js";
 import type { Searcher } from "../search.js";
@@ -38,6 +39,13 @@ export interface SittingRequestDeps {
  * material stays in context (no boundary in the rule).
  */
 export declare function currentBoundary(sittings: readonly SittingRow[], lineage: readonly LineageLink[]): SittingRow | undefined;
+/**
+ * Map the newest user message to its user input entry by reading entries
+ * descending and matching the model message's timestamp and messageKey.
+ */
+export declare function findUserEntry(read: EntriesReader, newest: UserMessage, options?: {
+    readonly maxPages?: number;
+}): Promise<EntryRecord | undefined>;
 /**
  * Draw sittings boundaries and assemble the request: earlier sittings are
  * summarized in a stored block on the boundary message, and pre-boundary

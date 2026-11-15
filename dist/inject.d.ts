@@ -2,7 +2,7 @@ import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { Confidentiality, RecallDb } from "./db.js";
 import type { Hit, Searcher } from "./search.js";
-import type { InContextRule } from "./sittings/lineage.js";
+import type { EntriesReader, InContextRule } from "./sittings/lineage.js";
 export interface InjectDeps {
     conversationId: number;
     db: RecallDb;
@@ -18,6 +18,8 @@ export interface InjectDeps {
     inContext: InContextRule;
     /** Boundary messages use the sitting block, not ordinary auto-recall. */
     skipTimestamps?: ReadonlySet<number>;
+    /** The current conversation's entry reader. */
+    read: EntriesReader;
     /** The admin's live locality switch; unknown sources fail closed. */
     isLocal: (model: string) => boolean;
     /** Live source metadata; a missing reader fails closed for sourced blocks. */

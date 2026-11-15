@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionWorker, SigrunHost } from "@sigrun/sigrun/extension";
+import { isUserInput, typedText } from "@sigrun/shared/turns";
 
 import type { Confidentiality, RecallDb } from "../db.js";
 import { fallbackLine, TOC_BUDGET_BYTES, tocBytes, tocSnapshot } from "./toc.js";
@@ -39,10 +40,6 @@ export function messageText(message: Message | undefined): string {
 		.join("\n");
 }
 
-function isUserInput(entry: EntryRecord): boolean {
-	return entry.kind === "pi.user" || entry.kind === "sigrun.user.expanded";
-}
-
 function isAssistant(entry: EntryRecord): boolean {
 	return entry.kind === "pi.assistant";
 }
@@ -55,10 +52,11 @@ function sittingPrompt(
 	let prompt = "";
 	for (const entry of entries) {
 		if (entry.id < startEntryId) continue;
-		if (!isUserInput(entry) && !isAssistant(entry)) continue;
-		const text = messageText(entry.model?.[0]);
+		const userInput = isUserInput(entry);
+		if (!userInput && !isAssistant(entry)) continue;
+		const text = userInput ? typedText(entry, " ") : messageText(entry.model?.[0]);
 		if (text.length === 0) continue;
-		const role = isUserInput(entry) ? "User" : "Assistant";
+		const role = userInput ? "User" : "Assistant";
 		const piece = `${role}: ${text}\n`;
 		if (prompt.length + piece.length > PROMPT_CHAR_BUDGET) {
 			prompt += piece.slice(0, Math.max(0, PROMPT_CHAR_BUDGET - prompt.length));
@@ -123,7 +121,9 @@ export function firstSitting(conversationId: number, entry: EntryRecord): Sittin
 		startEntryId: entry.id,
 		startAt: entry.model?.[0]?.timestamp ?? 0,
 		boundary: false,
-		boundaryText: messageText(entry.model?.[0]),
+		boundaryText: isUserInput(entry)
+			? typedText(entry, " ")
+			: messageText(entry.model?.[0]),
 		previous: null,
 		block: null,
 		title: null,
@@ -150,10 +150,11 @@ async function readDraftEntries(
 		);
 		for (const entry of page.items) {
 			all.push(entry);
-			if (!isUserInput(entry) && !isAssistant(entry)) continue;
-			const text = messageText(entry.model?.[0]);
+			const userInput = isUserInput(entry);
+			if (!userInput && !isAssistant(entry)) continue;
+			const text = userInput ? typedText(entry, " ") : messageText(entry.model?.[0]);
 			if (text.length === 0) continue;
-			const role = isUserInput(entry) ? "User" : "Assistant";
+			const role = userInput ? "User" : "Assistant";
 			promptBytes += Buffer.byteLength(`${role}: ${text}\n`);
 			if (promptBytes > PROMPT_CHAR_BUDGET) return all;
 		}

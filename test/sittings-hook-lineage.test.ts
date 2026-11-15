@@ -13,7 +13,7 @@ import createRecall from "../src/index.js";
 import { withDeclaredSettings } from "./fake-host.js";
 
 describe("recall beforeRequest lineage adapter", () => {
-  it("passes ascending queries and limit/cursor/context in pi-durable order", async () => {
+  it("passes sittings and auto-recall queries in pi-durable order", async () => {
     const root = await mkdtemp(join(tmpdir(), "recall-lineage-hook-"));
     try {
       const result = await createRecall(
@@ -44,8 +44,8 @@ describe("recall beforeRequest lineage adapter", () => {
         entries: async (...args: unknown[]) => {
           calls.push(args);
           // Empty: the lineage resolves to the own-conversation link and
-          // the sittings step maps no user entry, so this pins the lineage
-          // adapter alone.
+          // neither sittings nor auto-recall can map a user entry. Each
+          // reader makes one descending page request thereafter.
           return { items: [] as EntryRecord[] };
         },
       };
@@ -59,6 +59,12 @@ describe("recall beforeRequest lineage adapter", () => {
         // newest user message to its entry (descending).
         [
           { order: "ascending", minEntryId: undefined, maxEntryId: undefined },
+          200,
+          undefined,
+          context,
+        ],
+        [
+          { order: "descending", minEntryId: undefined, maxEntryId: undefined },
           200,
           undefined,
           context,
