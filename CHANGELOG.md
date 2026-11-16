@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-15
+
+- Release-machinery only: the v0.6.0 tag tested against the then-
+  unreleased core (the shared helpers this release imports exist only
+  in core 0.20.0); CI now tests against core main during the train.
+  Identical code to 0.6.0.
+
 ## [0.6.0] - 2026-11-15
 
 - Recognise `sigrun.user` input entries (attachments recorded on the
