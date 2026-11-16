@@ -168,6 +168,44 @@ function idleWake() {
 }
 
 describe("sitting drafter", () => {
+  it("counts a sigrun.user entry as input and drafts from its typed text", async () => {
+    const body = `inline attachment body ${"x".repeat(100 * 1024)}`;
+    const message = userMessage("", T0);
+    message.content = [
+      { type: "text", text: "compare the slide-in ranges" },
+      { type: "text", text: body },
+    ];
+    const input = {
+      ...entry(1, "sigrun.user", message),
+      data: {
+        attachments: [{
+          path: "ranges.txt",
+          name: "ranges.txt",
+          mime: "text/plain",
+          bytes: body.length,
+          delivery: "inline",
+          parts: [1],
+        }],
+      },
+    } as EntryRecord;
+    const fake = fakeHost({}, [
+      input,
+      entry(2, "pi.assistant", assistantMessage("The slide-in ranges overlap.")),
+    ]);
+    const db = memoryDb();
+
+    await createSittingDrafter(deps(db, fake)).run(
+      { abortSignal: undefined },
+      idleWake(),
+    );
+
+    expect(db.sittings([1])).toHaveLength(1);
+    expect(fake.calls[0]!.prompt).toBe(
+      "User: compare the slide-in ranges\nAssistant: The slide-in ranges overlap.\n",
+    );
+    expect(fake.calls[0]!.prompt).not.toContain("inline attachment body");
+  });
+
   it("drafts the open sitting's line with the utility model", async () => {
     const db = memoryDb();
     const fake = fakeHost({}, basicEntries);

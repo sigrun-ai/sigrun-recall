@@ -85,7 +85,7 @@ function setup(
     const { id: _id, ...row } = value.item;
     db.insertItem(row, value.snippet);
   }
-  const search = vi.fn(async () => hits);
+  const search = vi.fn(async (_query: string, _context: unknown, _limit: number) => hits);
   const searcher: Searcher = { search };
   const deps: InjectDeps = {
     conversationId: 1,
@@ -96,6 +96,7 @@ function setup(
     autoRecall: true,
     internal: false,
     inContext: allInContext(1),
+    read: async () => ({ items: [] }),
     isLocal: (candidate) => candidate === "acme-local/chat-1",
     sourceMeta: async () => meta(),
   };
@@ -113,6 +114,100 @@ function texts(messages: readonly Message[] | undefined): string[] {
 }
 
 describe("automatic recall", () => {
+  it("queries typed text instead of a sigrun.user message's inline attachment body", async () => {
+    const body = `inline attachment body ${"x".repeat(100 * 1024)}`;
+    const typed = "compare the slide-in ranges";
+    const message = user("", AT);
+    message.content = [
+      { type: "text", text: typed },
+      { type: "text", text: body },
+    ];
+    const entry = {
+      id: 9,
+      conversationId: 1,
+      kind: "sigrun.user",
+      model: [message],
+      data: {
+        attachments: [{
+          path: "ranges.txt",
+          name: "ranges.txt",
+          mime: "text/plain",
+          bytes: body.length,
+          delivery: "inline",
+          parts: [1],
+        }],
+      },
+    } as unknown as EntryRecord;
+    const { db, deps, search } = setup();
+
+    await applyRecall([message], { ...deps, read: async () => ({ items: [entry] }) });
+
+    expect(search).toHaveBeenCalledWith(
+      "compare the slide-in ranges",
+      expect.anything(),
+      5,
+    );
+    expect(search.mock.calls[0]![0]).toContain("slide-in");
+    expect(search.mock.calls[0]![0]).not.toContain("inline attachment body");
+    expect(search.mock.calls[0]![0]).not.toContain(body.slice(0, 128));
+    db.close();
+  });
+
+  it("queries space-joined attachment names when the user typed no text", async () => {
+    const message = user("", AT);
+    message.content = [
+      { type: "text", text: "first attachment marker" },
+      { type: "text", text: "second attachment marker" },
+    ];
+    const entry = {
+      id: 10,
+      conversationId: 1,
+      kind: "sigrun.user",
+      model: [message],
+      data: {
+        attachments: [
+          {
+            path: "ranges.csv",
+            name: "ranges.csv",
+            mime: "text/csv",
+            bytes: 100,
+            delivery: "inline",
+            parts: [0],
+          },
+          {
+            path: "results.pdf",
+            name: "results.pdf",
+            mime: "application/pdf",
+            bytes: 200,
+            delivery: "inline",
+            parts: [1],
+          },
+        ],
+      },
+    } as unknown as EntryRecord;
+    const { db, deps, search } = setup();
+
+    await applyRecall([message], { ...deps, read: async () => ({ items: [entry] }) });
+
+    expect(search).toHaveBeenCalledWith("ranges.csv results.pdf", expect.anything(), 5);
+    db.close();
+  });
+
+  it("keeps today's whole-message query when no matching entry exists", async () => {
+    const { db, deps, search } = setup();
+    deps.meta = { ...deps.meta, name: "Range review" };
+    const message = user("question from a hook-added message");
+
+    await applyRecall([message], { ...deps, read: async () => ({ items: [] }) });
+
+    expect(search).toHaveBeenCalledWith(
+      "question from a hook-added message Range review",
+      expect.anything(),
+      5,
+    );
+    db.close();
+  });
+
   it("auto-recall surfaces a pre-boundary passage of the same conversation", async () => {
     const db = RecallDb.open(":memory:");
     const sourceText = "the earlier clinic recommendation";
@@ -176,6 +271,7 @@ describe("automatic recall", () => {
         ...allInContext(1),
         boundary: { entryId: 40, at: AT },
       },
+      read: async () => ({ items: [] }),
       isLocal: (candidate) => candidate === "acme-local/chat-1",
       sourceMeta: async () => meta(),
     };
@@ -518,6 +614,7 @@ describe("automatic recall", () => {
     const deps: InjectDeps = {
       conversationId: 1,
       db,
+      read: async () => ({ items: [] }),
       searcher: { search },
       meta: meta(),
       model: { provider: "acme-local", id: "chat-1" },
@@ -549,6 +646,7 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: shared,
+      read: async () => ({ items: [] }),
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
@@ -568,6 +666,7 @@ describe("automatic recall", () => {
       db,
       searcher: { search },
       meta: { ...meta(), owner: "bob" },
+      read: async () => ({ items: [] }),
       model: { provider: "acme-local", id: "chat-1" },
       autoRecall: true,
       internal: false,
@@ -585,6 +684,7 @@ describe("automatic recall", () => {
     const base: InjectDeps = {
       conversationId: 1,
       db,
+      read: async () => ({ items: [] }),
       searcher: { search },
       meta: meta(),
       model: { provider: "acme-local", id: "chat-1" },

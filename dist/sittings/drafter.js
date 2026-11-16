@@ -1,3 +1,4 @@
+import { isUserInput, typedText } from "@sigrun/shared/turns";
 import { fallbackLine, TOC_BUDGET_BYTES, tocBytes, tocSnapshot } from "./toc.js";
 export const LINE_PROMPT = "Summarize this part of a conversation in one line of at most 20 words: what was asked and what was concluded. Reply with the line only.";
 export const MONTH_PROMPT = "Merge these one-line summaries into one line of at most 30 words. Reply with the line only.";
@@ -16,9 +17,6 @@ export function messageText(message) {
         .map((part) => (part.type === "text" ? part.text : ""))
         .join("\n");
 }
-function isUserInput(entry) {
-    return entry.kind === "pi.user" || entry.kind === "sigrun.user.expanded";
-}
 function isAssistant(entry) {
     return entry.kind === "pi.assistant";
 }
@@ -28,12 +26,13 @@ function sittingPrompt(entries, startEntryId) {
     for (const entry of entries) {
         if (entry.id < startEntryId)
             continue;
-        if (!isUserInput(entry) && !isAssistant(entry))
+        const userInput = isUserInput(entry);
+        if (!userInput && !isAssistant(entry))
             continue;
-        const text = messageText(entry.model?.[0]);
+        const text = userInput ? typedText(entry, " ") : messageText(entry.model?.[0]);
         if (text.length === 0)
             continue;
-        const role = isUserInput(entry) ? "User" : "Assistant";
+        const role = userInput ? "User" : "Assistant";
         const piece = `${role}: ${text}\n`;
         if (prompt.length + piece.length > PROMPT_CHAR_BUDGET) {
             prompt += piece.slice(0, Math.max(0, PROMPT_CHAR_BUDGET - prompt.length));
@@ -69,7 +68,9 @@ export function firstSitting(conversationId, entry) {
         startEntryId: entry.id,
         startAt: entry.model?.[0]?.timestamp ?? 0,
         boundary: false,
-        boundaryText: messageText(entry.model?.[0]),
+        boundaryText: isUserInput(entry)
+            ? typedText(entry, " ")
+            : messageText(entry.model?.[0]),
         previous: null,
         block: null,
         title: null,
@@ -85,12 +86,13 @@ async function readDraftEntries(host, conversationId, startEntryId) {
         const page = await readPage(host, conversationId, { order: "ascending", minEntryId: startEntryId }, PAGE_SIZE, cursor);
         for (const entry of page.items) {
             all.push(entry);
-            if (!isUserInput(entry) && !isAssistant(entry))
+            const userInput = isUserInput(entry);
+            if (!userInput && !isAssistant(entry))
                 continue;
-            const text = messageText(entry.model?.[0]);
+            const text = userInput ? typedText(entry, " ") : messageText(entry.model?.[0]);
             if (text.length === 0)
                 continue;
-            const role = isUserInput(entry) ? "User" : "Assistant";
+            const role = userInput ? "User" : "Assistant";
             promptBytes += Buffer.byteLength(`${role}: ${text}\n`);
             if (promptBytes > PROMPT_CHAR_BUDGET)
                 return all;

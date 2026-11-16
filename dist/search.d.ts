@@ -4,6 +4,8 @@ import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { ArtifactStore } from "./artifacts.js";
 import type { ItemKind, ItemRow, RecallDb } from "./db.js";
 import type { InContextRule } from "./sittings/lineage.js";
+export declare const MAX_QUERY_TOKENS = 32;
+export declare const MAX_TOKEN_CHARS = 64;
 export interface SearchContext {
     /** Acting directory user; undefined selects the system embedding default. */
     user?: string;
@@ -51,3 +53,4 @@ export declare function createSearcher(deps: {
     artifactStore?: ArtifactStore;
     now(): number;
 }): Searcher;
+export declare function queryTokens(query: string): string[];

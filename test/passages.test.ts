@@ -12,6 +12,34 @@ function entry(model: EntryRecord["model"]): EntryRecord {
   } as unknown as EntryRecord;
 }
 
+function attachmentEntry(
+  content: unknown[],
+  attachments: unknown[],
+): EntryRecord {
+  return {
+    ...entry([
+      {
+        role: "user",
+        content,
+        timestamp: 1234,
+      },
+    ] as EntryRecord["model"]),
+    kind: "sigrun.user",
+    data: { attachments },
+  } as EntryRecord;
+}
+
+function attachment(parts: number[], delivery = "inline"): unknown {
+  return {
+    path: "uploads/7/a.md",
+    name: "a.md",
+    mime: delivery === "image" ? "image/png" : "text/markdown",
+    bytes: 10 * 1024,
+    delivery,
+    parts,
+  };
+}
+
 function assistant(
   content: unknown[],
   timestamp: number,
@@ -76,6 +104,94 @@ describe("passagesOf", () => {
     );
     expect(passages.map((passage) => passage.text)).toEqual(["first block", "second block"]);
     expect(passages.map((passage) => passage.blockIndex)).toEqual([0, 1]);
+  });
+
+  it("indexes an inline attachment's marker and typed text, not its 10 KB body", () => {
+    const body = `private attachment body ${"x".repeat(10 * 1024)}`;
+    const marker = '<attachment path="uploads/7/a.md" type="text/markdown" size="10.0 KB">';
+    const passages = passagesOf(
+      attachmentEntry(
+        [
+          { type: "text", text: `${marker}\n${body}\n</attachment>` },
+          { type: "text", text: "summarise the attached note" },
+        ],
+        [attachment([0])],
+      ),
+    );
+
+    expect(passages.map((passage) => passage.text)).toEqual([
+      marker,
+      "summarise the attached note",
+    ]);
+    expect(
+      passages.map(({ messageIndex, blockIndex, offset }) => ({
+        messageIndex,
+        blockIndex,
+        offset,
+      })),
+    ).toEqual([
+      { messageIndex: 0, blockIndex: 0, offset: 0 },
+      { messageIndex: 0, blockIndex: 1, offset: 0 },
+    ]);
+    expect(passages.some((passage) => passage.text.includes(body))).toBe(false);
+  });
+
+  it("indexes an image attachment's marker without indexing the image", () => {
+    const marker =
+      '<attachment path="uploads/7/a.md" type="image/png" size="10.0 KB" delivery="image"/>';
+    const passages = passagesOf(
+      attachmentEntry(
+        [
+          { type: "text", text: "inspect the attached chart" },
+          { type: "text", text: marker },
+          { type: "image", data: "c3ludGhldGljLWJhc2U2NA==", mimeType: "image/png" },
+        ],
+        [attachment([1, 2], "image")],
+      ),
+    );
+
+    expect(passages.map((passage) => passage.text)).toEqual([
+      "inspect the attached chart",
+      marker,
+    ]);
+    expect(passages.map((passage) => passage.blockIndex)).toEqual([0, 1]);
+    expect(passages[1]?.offset).toBe(0);
+  });
+
+  it("derives identical attachment passage triples on every call", () => {
+    const record = attachmentEntry(
+      [
+        {
+          type: "text",
+          text: '<attachment path="uploads/7/a.md" type="text/markdown" size="10.0 KB">\nbody\n</attachment>',
+        },
+        { type: "text", text: "what does the note say?" },
+      ],
+      [attachment([0])],
+    );
+    const triples = () =>
+      passagesOf(record).map(({ messageIndex, blockIndex, offset }) => ({
+        messageIndex,
+        blockIndex,
+        offset,
+      }));
+
+    expect(triples()).toEqual(triples());
+    expect(triples()).toEqual([
+      { messageIndex: 0, blockIndex: 0, offset: 0 },
+      { messageIndex: 0, blockIndex: 1, offset: 0 },
+    ]);
+  });
+
+  it("ignores attachment-shaped data on pi.user entries", () => {
+    const marker = '<attachment path="uploads/7/a.md" type="text/markdown" size="10.0 KB">';
+    const inline = `${marker}\nplain user body\n</attachment>`;
+    const record = {
+      ...attachmentEntry([{ type: "text", text: inline }], [attachment([0])]),
+      kind: "pi.user",
+    } as EntryRecord;
+
+    expect(passagesOf(record).map((passage) => passage.text)).toEqual([inline]);
   });
 
   it('passagesOf skips thinking and renders a tool call as "web_fetch {"url":"https://example.invalid/a"}"', () => {

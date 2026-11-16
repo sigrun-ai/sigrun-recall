@@ -19,6 +19,7 @@ import createRecall from "../src/index.js";
 import type { Hit, Searcher } from "../src/search.js";
 import {
 	applySittings,
+	findUserEntry,
 	SITTING_HEADER,
 	type SittingRequestDeps,
 } from "../src/sittings/request.js";
@@ -187,6 +188,43 @@ function textParts(message: Message | undefined): string[] {
 				.map((part) => (part.type === "text" ? part.text : ""));
 }
 
+describe("findUserEntry", () => {
+	it("with maxPages: 1 reads exactly one descending page and returns its match", async () => {
+		const newest = user("newest question", BOUNDARY);
+		const entries = [
+			entry(1, 1, "sigrun.user", user("first question", T0)),
+			entry(2, 1, "sigrun.user", newest),
+		];
+		const read = vi.fn(
+			async (_query: unknown, _limit: number, _cursor: unknown) => ({
+				items: [entries[1]!],
+				next: 1,
+			}),
+		);
+
+		const result = await findUserEntry(read, newest, { maxPages: 1 });
+
+		expect(result).toEqual(entries[1]);
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(read).toHaveBeenCalledWith({ order: "descending" }, 200, undefined);
+	});
+
+	it("stops after one limited page even when its match is only on the next page", async () => {
+		const newest = user("newest question", BOUNDARY);
+		const unmatched = entry(2, 1, "sigrun.user", user("other question", BOUNDARY + 1));
+		const match = entry(1, 1, "sigrun.user", newest);
+		const read = vi.fn(
+			async (_query: unknown, _limit: number, cursor: unknown) =>
+				cursor === undefined
+					? { items: [unmatched], next: 1 }
+					: { items: [match] },
+		);
+
+		await expect(findUserEntry(read, newest, { maxPages: 1 })).resolves.toBeUndefined();
+		expect(read).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("applySittings", () => {
 	it("a return after the gap draws one boundary and trims the request", async () => {
 		const { entries, messages } = fixture();
@@ -339,6 +377,7 @@ describe("applySittings", () => {
 			internal: false,
 			inContext: result.rule,
 			skipTimestamps: result.skipTimestamps,
+			read: reader(nextEntries),
 			isLocal: () => false,
 			sourceMeta: async () => meta(),
 		});

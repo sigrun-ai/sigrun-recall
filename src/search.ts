@@ -12,6 +12,9 @@ import { mayRead } from "./policy.js";
 import { redact } from "./redact.js";
 import { snippetOf } from "./snippet.js";
 
+export const MAX_QUERY_TOKENS = 32;
+export const MAX_TOKEN_CHARS = 64;
+
 const ARM_LIMIT = 200;
 const RRF_K = 60;
 const DAY_MS = 86_400_000;
@@ -60,12 +63,12 @@ export function createSearcher(deps: {
 	return {
 		async search(query, ctx, limit) {
 			if (limit <= 0) return [];
-			const tokens = query.split(/\s+/).filter((token) => token.length >= 2);
-			const porterQuery = tokens.map(quote).join(" ");
+			const tokens = queryTokens(query);
+			const porterQuery = tokens.map(quote).join(" OR ");
 			const trigramQuery = tokens
 				.filter((token) => token.length >= 3)
 				.map(quote)
-				.join(" ");
+				.join(" OR ");
 			const ranks = new Map<number, { item: ItemRow; score: number }>();
 
 			function fuse(rows: { id: number }[]): void {
@@ -81,10 +84,12 @@ export function createSearcher(deps: {
 
 			if (porterQuery !== "") fuse(deps.db.searchPorter(porterQuery, ARM_LIMIT));
 			if (trigramQuery !== "") fuse(deps.db.searchTrigram(trigramQuery, ARM_LIMIT));
-			if (deps.vectors !== undefined) {
+			if (tokens.length > 0 && deps.vectors !== undefined) {
 				const vectors = await deps.vectors(ctx.user);
 				const matches =
-					vectors === undefined ? [] : await vectors.query(query, ARM_LIMIT);
+					vectors === undefined
+						? []
+						: await vectors.query(tokens.join(" "), ARM_LIMIT);
 				fuse(matches.map(({ itemId }) => ({ id: itemId })));
 			}
 
@@ -164,6 +169,20 @@ export function createSearcher(deps: {
 			return hits;
 		},
 	};
+}
+
+export function queryTokens(query: string): string[] {
+	const tokens: string[] = [];
+	const seen = new Set<string>();
+	for (const token of query.split(/\s+/)) {
+		if (token.length < 2 || token.length > MAX_TOKEN_CHARS) continue;
+		const normalized = token.toLowerCase();
+		if (seen.has(normalized)) continue;
+		seen.add(normalized);
+		tokens.push(token);
+		if (tokens.length === MAX_QUERY_TOKENS) break;
+	}
+	return tokens;
 }
 
 function quote(token: string): string {

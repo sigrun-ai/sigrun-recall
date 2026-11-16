@@ -1,6 +1,7 @@
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
+import { isUserInput, typedText } from "@sigrun/shared/turns";
 
 import type { Confidentiality, RecallDb } from "../db.js";
 import { messageKey, renderBlock } from "../inject.js";
@@ -8,7 +9,7 @@ import { mayRead } from "../policy.js";
 import type { Searcher } from "../search.js";
 import { assembleSitting, previousExchange } from "./assemble.js";
 import { isBoundary, type SittingOptions } from "./boundary.js";
-import { firstSitting, messageText } from "./drafter.js";
+import { firstSitting } from "./drafter.js";
 import {
 	loadLineage,
 	type EntriesReader,
@@ -46,12 +47,6 @@ export interface SittingRequestDeps {
 	lineageMemo?: LineageMemo;
 }
 
-const USER_INPUT_KINDS = new Set(["pi.user", "sigrun.user.expanded"]);
-
-function userText(message: UserMessage): string {
-	return messageText(message);
-}
-
 /**
  * The newest `boundary: true` sitting across the lineage whose start entry
  * is within its own conversation's inherited range. A boundary drawn after
@@ -84,16 +79,21 @@ export function currentBoundary(
  * Map the newest user message to its user input entry by reading entries
  * descending and matching the model message's timestamp and messageKey.
  */
-async function findUserEntry(
+export async function findUserEntry(
 	read: EntriesReader,
 	newest: UserMessage,
+	options?: { readonly maxPages?: number },
 ): Promise<EntryRecord | undefined> {
 	const key = messageKey(newest);
 	let cursor: unknown;
-	do {
+	for (
+		let pageNumber = 0;
+		options?.maxPages === undefined || pageNumber < options.maxPages;
+		pageNumber += 1
+	) {
 		const page = await read({ order: "descending" }, 200, cursor);
 		for (const entry of page.items) {
-			if (!USER_INPUT_KINDS.has(entry.kind)) continue;
+			if (!isUserInput(entry)) continue;
 			const model = entry.model?.[0];
 			if (
 				model !== undefined &&
@@ -104,8 +104,9 @@ async function findUserEntry(
 				return entry;
 			}
 		}
+		if (page.next === undefined) return undefined;
 		cursor = page.next;
-	} while (cursor !== undefined);
+	}
 	return undefined;
 }
 
@@ -120,7 +121,7 @@ async function findFirstUserEntry(
 		for (const entry of page.items) {
 			if (
 				entry.conversationId === conversationId &&
-				USER_INPUT_KINDS.has(entry.kind) &&
+				isUserInput(entry) &&
 				entry.model?.[0]?.role === "user"
 			) {
 				return entry;
@@ -295,7 +296,7 @@ async function drawBoundary(
 	const lineageIds = lineage.map((link) => link.conversationId);
 	const boundaryEntryId = entry.id;
 	const hits = await deps.searcher.search(
-		`${userText(newest)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
+		`${typedText(entry, " ")}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
 		{
 			user: deps.meta.owner,
 			current: {
@@ -388,7 +389,7 @@ async function drawBoundary(
 			startEntryId: entry.id,
 			startAt: newest.timestamp,
 			boundary: true,
-			boundaryText: userText(newest),
+			boundaryText: typedText(entry, " "),
 			previous: previous ?? null,
 			block: { header: SITTING_HEADER, toc, recall },
 			title: null,

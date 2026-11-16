@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RecallDb, type ItemRow } from "../src/db.js";
 import createRecall from "../src/index.js";
@@ -13,6 +13,9 @@ import type { EmbeddingModelRow } from "../src/vectors.js";
 import { withDeclaredSettings } from "./fake-host.js";
 import {
   createSearcher,
+  MAX_QUERY_TOKENS,
+  MAX_TOKEN_CHARS,
+  queryTokens,
   type SearchContext,
   type Searcher,
 } from "../src/search.js";
@@ -225,7 +228,97 @@ async function perUserSearch(options: PerUserSearchOptions) {
   };
 }
 
+describe("queryTokens", () => {
+  it("drops tokens over 64 characters and keeps tokens at the documented maximum", () => {
+    expect(queryTokens(`${"a".repeat(65)} ${"b".repeat(MAX_TOKEN_CHARS)}`)).toEqual([
+      "b".repeat(MAX_TOKEN_CHARS),
+    ]);
+    expect(MAX_TOKEN_CHARS).toBe(64);
+  });
+
+  it("dedupes case-insensitively while preserving the first occurrence", () => {
+    expect(queryTokens("Range range RANGE")).toEqual(["Range"]);
+  });
+
+  it("keeps only the documented maximum of 32 tokens", () => {
+    expect(MAX_QUERY_TOKENS).toBe(32);
+    const expected = Array.from(
+      { length: MAX_QUERY_TOKENS },
+      (_, index) => `token${index}`,
+    );
+    const query = [...expected, "token32", "token33"].join(" ");
+    expect(queryTokens(query)).toEqual(expected);
+  });
+});
+
 describe("search", () => {
+  it("returns passages matching any query token", async () => {
+    const db = RecallDb.open(":memory:");
+    db.insertItem(item(), "induction");
+    db.insertItem(item({ entryId: 2, length: 8 }), "slide-in");
+    const entries = new Map([
+      [1, entry(1, 1, "induction")],
+      [2, entry(2, 1, "slide-in")],
+    ]);
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async (_conversationId, entryId) => entries.get(entryId),
+      isLocal: () => true,
+      now: () => NOW,
+    });
+    try {
+      const hits = await searcher.search("induction slide-in oven", context(), 10);
+      expect(hits).toHaveLength(2);
+      expect(hits.map((hit) => hit.item.entryId)).toEqual(
+        expect.arrayContaining([1, 2]),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not issue FTS queries for a single oversized token", async () => {
+    const { db, searcher } = setup("clinic");
+    const porter = vi.spyOn(db, "searchPorter");
+    try {
+      expect(
+        await searcher.search("a".repeat(4_000), context(), 10),
+      ).toEqual([]);
+      expect(porter).not.toHaveBeenCalled();
+    } finally {
+      porter.mockRestore();
+      db.close();
+    }
+  });
+
+  it("bounds, deduplicates, and trims tokens passed to the vector arm", async () => {
+    const { db } = setup("ordinary passage");
+    const vectorQueries: string[] = [];
+    const boundedSearcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => undefined,
+      isLocal: () => true,
+      vectors: async () => ({
+        query: async (text) => {
+          vectorQueries.push(text);
+          return [];
+        },
+      }),
+      now: () => NOW,
+    });
+    const query = `${Array.from({ length: 33 }, (_, index) => `alpha${index}`).join(" ")} Alpha0 ${"a".repeat(65)}`;
+    try {
+      expect(await boundedSearcher.search(query, context(), 10)).toEqual([]);
+      expect(vectorQueries).toEqual([
+        Array.from({ length: 32 }, (_, index) => `alpha${index}`).join(" "),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("inContext filters only material already visible in the current sitting", async () => {
     const db = RecallDb.open(":memory:");
     db.insertItem(item({ entryId: 39, at: 3_900 }), "pre-boundary clinic");

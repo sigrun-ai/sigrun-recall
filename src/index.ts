@@ -552,6 +552,7 @@ export default async function createRecall(
 							autoRecall: prefs.autoRecall,
 							internal: liveMeta.internal === true,
 							inContext: { lineage: ownLineage() },
+							read: entriesReader,
 							isLocal,
 							sourceMeta: (id) => meta(id),
 						};
