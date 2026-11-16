@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-15
+
+- Recognise `sigrun.user` input entries (attachments recorded on the
+  entry) via the shared `isUserInput` helper.
+- The automatic-recall query is BOUNDED: at most 32 tokens of at most 64
+  characters each, deduplicated case-insensitively, matched with FTS5
+  OR (was: implicit AND of every whitespace token — a large message
+  built a thousands-phrase query whose native allocation could exceed
+  the container limit; this is the OOM fix for attachment-heavy
+  messages). A query whose every token is dropped issues no FTS MATCH.
+- The query is built from the newest user message's TYPED TEXT (one
+  descending page lookup; attachments-only messages search their file
+  names); the vector arm embeds the same bounded text.
+- Attachment bodies stay out of the index: only each attachment's
+  marker line (file name, type, size) is indexed, so file names stay
+  searchable and read-time re-derivation is deterministic.
+- Peer floors: `@sigrun/shared` gains 0.20.0, `@sigrun/sigrun`
+  >= 0.20.0.
+
 ## [0.5.2] - 2026-11-15
 
 ### Fixed
