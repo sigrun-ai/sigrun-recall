@@ -3,9 +3,8 @@
 # drift across the 10 repos. needs-core: true (file:-linked dev
 # deps; core and the family siblings are checked out beside this repo
 # first).
-# core-ref: main while the 0.20.0 train bootstraps (the source needs
-# shared helpers that only exist in core 0.20.0, unpublished at tagging
-# time); flip back to release once core 0.20.0 is on the registry.
+# core-ref: release tests against the latest released core; the lane's
+# changes need only published core (floors >=0.20.0 / >=0.19.1).
 name: ci
 
 on:
@@ -21,4 +20,4 @@ jobs:
     uses: sigrun-ai/sigrun/.github/workflows/ext-ci.yml@main
     with:
       needs-core: true
-      core-ref: main
+      core-ref: release

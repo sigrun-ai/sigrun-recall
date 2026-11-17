@@ -3,9 +3,8 @@
 # file's name (release.yml) in THIS repo — that is the OIDC trust
 # configuration, so the name must not change. permissions id-token:
 # write is the OIDC grant; no NPM_TOKEN exists anywhere.
-# core-ref: main while the 0.20.0 train bootstraps (the source needs
-# shared helpers that only exist in core 0.20.0, unpublished at tagging
-# time); flip back to release once core 0.20.0 is on the registry.
+# core-ref: release tests against the latest released core; the lane's
+# changes need only published core (floors >=0.20.0 / >=0.19.1).
 name: release
 
 on:
@@ -38,7 +37,7 @@ jobs:
     secrets: inherit
     with:
       needs-core: true
-      core-ref: main
+      core-ref: release
       tag: ${{ inputs.tag || '' }}
       dry-run: ${{ inputs.dry-run || false }}
       dry-run-ref: ${{ inputs.ref || '' }}
