@@ -1,4 +1,4 @@
-import type { Message, UserMessage } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { Confidentiality, RecallDb } from "./db.js";
 import type { Hit, Searcher } from "./search.js";
@@ -25,8 +25,6 @@ export interface InjectDeps {
     /** Live source metadata; a missing reader fails closed for sourced blocks. */
     sourceMeta?: (conversationId: number) => Promise<SessionMeta>;
 }
-/** Stable identity of a user message for per-message injection reuse. */
-export declare function messageKey(message: UserMessage): string;
 /** Render stable, untrusted reference material within the snippet byte budget. */
 export declare function renderBlock(hits: readonly Hit[]): string;
 /** Recheck every stored source against its live metadata and the current model. */

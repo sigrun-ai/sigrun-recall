@@ -281,13 +281,16 @@ describe("search", () => {
   it("does not issue FTS queries for a single oversized token", async () => {
     const { db, searcher } = setup("clinic");
     const porter = vi.spyOn(db, "searchPorter");
+    const trigram = vi.spyOn(db, "searchTrigram");
     try {
       expect(
         await searcher.search("a".repeat(4_000), context(), 10),
       ).toEqual([]);
       expect(porter).not.toHaveBeenCalled();
+      expect(trigram).not.toHaveBeenCalled();
     } finally {
       porter.mockRestore();
+      trigram.mockRestore();
       db.close();
     }
   });
@@ -315,6 +318,38 @@ describe("search", () => {
         Array.from({ length: 32 }, (_, index) => `alpha${index}`).join(" "),
       ]);
     } finally {
+      db.close();
+    }
+  });
+
+  it("a single oversized token skips the FTS arms (porter AND trigram) and never calls the vector factory", async () => {
+    // A11: every token dropped means no FTS MATCH and no vector arm —
+    // the factory must not even be invoked (no embed can follow).
+    const db = RecallDb.open(":memory:");
+    db.insertItem(item(), "clinic");
+    const porter = vi.spyOn(db, "searchPorter");
+    const trigram = vi.spyOn(db, "searchTrigram");
+    const vectors = vi.fn(async () => ({
+      query: async () => [],
+    }));
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => entry(1, 1, "clinic"),
+      isLocal: () => true,
+      vectors,
+      now: () => NOW,
+    });
+    try {
+      expect(
+        await searcher.search("a".repeat(4_000), context(), 10),
+      ).toEqual([]);
+      expect(porter).not.toHaveBeenCalled();
+      expect(trigram).not.toHaveBeenCalled();
+      expect(vectors).not.toHaveBeenCalled();
+    } finally {
+      porter.mockRestore();
+      trigram.mockRestore();
       db.close();
     }
   });

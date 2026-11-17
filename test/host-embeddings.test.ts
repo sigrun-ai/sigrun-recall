@@ -423,7 +423,7 @@ describe("host.embeddings in recall", () => {
 			const late = await search("dog surgery");
 			expect(late.hits).toHaveLength(1);
 			expect(calls.at(-1)?.opts?.model).toBe(NEW);
-			expect(calls.at(-1)?.opts?.timeoutMs).toBe(800);
+			expect(calls.at(-1)?.opts?.timeoutMs).toBe(2000);
 			await result.harnessShutdown?.({} as never, {} as never);
 		} finally {
 			await rm(root, { recursive: true, force: true });

@@ -226,6 +226,55 @@ describe("findUserEntry", () => {
 });
 
 describe("applySittings", () => {
+	it("an attachments-only boundary question searches its attachment names and stores a non-empty boundaryText", async () => {
+		// A6: typed text is empty, so the boundary query must fall back to
+		// the attachment names — never the empty string.
+		const newest = user("", BOUNDARY);
+		const entries = [
+			entry(1, 1, "pi.user", user("old question", T0)),
+			entry(2, 1, "pi.assistant", assistant("old answer", T0 + 1_000)),
+			{
+				...entry(3, 1, "sigrun.user", newest),
+				data: {
+					attachments: [{
+						path: "notes.md",
+						name: "notes.md",
+						mime: "text/markdown",
+						bytes: 100,
+						delivery: "inline",
+						parts: [0],
+					}],
+				},
+			} as EntryRecord,
+		];
+		const messages: Message[] = [
+			entries[0]!.model![0]!,
+			entries[1]!.model![0]!,
+			newest,
+		];
+		const db = memoryDb();
+		const search = vi.fn(async () => [hit("remembered detail", 1)]);
+		const result = await applySittings(messages, deps({
+			db,
+			read: reader(entries),
+			searcher: { search },
+			meta: meta({ name: "Notes review" }),
+		}));
+
+		// The boundary search uses the attachment names plus the
+		// conversation name.
+		expect(search).toHaveBeenCalledWith(
+			"notes.md Notes review",
+			expect.anything(),
+			5,
+		);
+		// The boundary text is the attachment name, not an empty string.
+		const sitting = db.sittings([1]).find((row) => row.boundary);
+		expect(sitting?.boundaryText).toBe("notes.md");
+		// The new boundary is drawn and the request trimmed.
+		expect(result.skipTimestamps).toEqual(new Set([BOUNDARY]));
+	});
+
 	it("a return after the gap draws one boundary and trims the request", async () => {
 		const { entries, messages } = fixture();
 		const db = memoryDb();

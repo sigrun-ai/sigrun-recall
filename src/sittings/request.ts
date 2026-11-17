@@ -1,15 +1,16 @@
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
-import { isUserInput, typedText } from "@sigrun/shared/turns";
+import { isUserInput } from "@sigrun/shared/turns";
 
 import type { Confidentiality, RecallDb } from "../db.js";
-import { messageKey, renderBlock } from "../inject.js";
+import { renderBlock } from "../inject.js";
 import { mayRead } from "../policy.js";
 import type { Searcher } from "../search.js";
 import { assembleSitting, previousExchange } from "./assemble.js";
 import { isBoundary, type SittingOptions } from "./boundary.js";
 import { firstSitting } from "./drafter.js";
+import { entryQueryText, findUserEntry } from "./entries.js";
 import {
 	loadLineage,
 	type EntriesReader,
@@ -75,42 +76,11 @@ export function currentBoundary(
 	return best;
 }
 
-/**
- * Map the newest user message to its user input entry by reading entries
- * descending and matching the model message's timestamp and messageKey.
- */
-export async function findUserEntry(
-	read: EntriesReader,
-	newest: UserMessage,
-	options?: { readonly maxPages?: number },
-): Promise<EntryRecord | undefined> {
-	const key = messageKey(newest);
-	let cursor: unknown;
-	for (
-		let pageNumber = 0;
-		options?.maxPages === undefined || pageNumber < options.maxPages;
-		pageNumber += 1
-	) {
-		const page = await read({ order: "descending" }, 200, cursor);
-		for (const entry of page.items) {
-			if (!isUserInput(entry)) continue;
-			const model = entry.model?.[0];
-			if (
-				model !== undefined &&
-				model.role === "user" &&
-				model.timestamp === newest.timestamp &&
-				messageKey(model) === key
-			) {
-				return entry;
-			}
-		}
-		if (page.next === undefined) return undefined;
-		cursor = page.next;
-	}
-	return undefined;
-}
+export { findUserEntry } from "./entries.js";
 
-/** The earliest user input entry, for the first non-boundary sitting row. */
+/**
+ * The earliest user input entry, for the first non-boundary sitting row.
+ */
 async function findFirstUserEntry(
 	conversationId: number,
 	read: EntriesReader,
@@ -296,7 +266,7 @@ async function drawBoundary(
 	const lineageIds = lineage.map((link) => link.conversationId);
 	const boundaryEntryId = entry.id;
 	const hits = await deps.searcher.search(
-		`${typedText(entry, " ")}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
+		`${entryQueryText(entry)}${deps.meta.name === undefined ? "" : ` ${deps.meta.name}`}`,
 		{
 			user: deps.meta.owner,
 			current: {
@@ -389,7 +359,7 @@ async function drawBoundary(
 			startEntryId: entry.id,
 			startAt: newest.timestamp,
 			boundary: true,
-			boundaryText: typedText(entry, " "),
+			boundaryText: entryQueryText(entry),
 			previous: previous ?? null,
 			block: { header: SITTING_HEADER, toc, recall },
 			title: null,

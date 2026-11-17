@@ -10,6 +10,7 @@ import type { ExtensionWorker, SigrunHost } from "@sigrun/sigrun/extension";
 import { isUserInput, typedText } from "@sigrun/shared/turns";
 
 import type { Confidentiality, RecallDb } from "../db.js";
+import { entryQueryText } from "./entries.js";
 import { fallbackLine, TOC_BUDGET_BYTES, tocBytes, tocSnapshot } from "./toc.js";
 import type { LineRow, SittingRow } from "./types.js";
 
@@ -122,7 +123,7 @@ export function firstSitting(conversationId: number, entry: EntryRecord): Sittin
 		startAt: entry.model?.[0]?.timestamp ?? 0,
 		boundary: false,
 		boundaryText: isUserInput(entry)
-			? typedText(entry, " ")
+			? entryQueryText(entry)
 			: messageText(entry.model?.[0]),
 		previous: null,
 		block: null,
