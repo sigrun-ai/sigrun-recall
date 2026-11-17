@@ -29,6 +29,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (the vector arm is skipped), and the all-tokens-dropped FTS test now
   asserts `searchTrigram` is not called as well as `searchPorter`.
 
+### Changed
+
+- The `@sigrun/shared` peer becomes an open floor (`>=0.20.0`) instead of a
+  version-line chain (decisions C5); 0.20.0 is the first published line
+  carrying the runtime value import (`accessOf`) plus the
+  turns/embeddings/session-meta surface this extension imports.
+  `check-manifest` enforces the same floor. No runtime change.
+
 ## [0.6.3] - 2026-11-15
 
 - The @sigrun/shared peer gains the 0.20.2 line (companion to

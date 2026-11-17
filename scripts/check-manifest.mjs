@@ -79,9 +79,10 @@ const HOST_MODULE_PINS = {
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
 	typebox: "1.3.27",
-	// Every shared line since runtime value imports landed, through the
-	// shared version bundled by the minimum supported core.
-	"@sigrun/shared": "0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0 || 0.16.0 || 0.18.0 || 0.20.0 || 0.20.1 || 0.20.2",
+	// Open floor (C5): any shared line carrying the runtime value import
+	// (accessOf) plus the turns/embeddings/session-meta surface this
+	// extension uses. 0.20.0 is the first published line that does.
+	"@sigrun/shared": ">=0.20.0",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
