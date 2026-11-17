@@ -206,6 +206,42 @@ describe("sitting drafter", () => {
     expect(fake.calls[0]!.prompt).not.toContain("inline attachment body");
   });
 
+  it("an attachments-only first user entry gives the first sitting a non-empty boundaryText and TOC line", async () => {
+    // A6: typed text is empty; the boundary text must fall back to the
+    // attachment names so the TOC line is never the empty string.
+    const message = userMessage("", T0);
+    const input = {
+      ...entry(1, "sigrun.user", message),
+      data: {
+        attachments: [{
+          path: "notes.md",
+          name: "notes.md",
+          mime: "text/markdown",
+          bytes: 100,
+          delivery: "inline",
+          parts: [0],
+        }],
+      },
+    } as EntryRecord;
+    const fake = fakeHost({}, [
+      input,
+      entry(2, "pi.assistant", assistantMessage("Reviewed the notes.")),
+    ]);
+    const db = memoryDb();
+    // Taint from the first entry: the draft line is the deterministic
+    // fallback of the boundary text (no model call).
+    db.setTaint(1, 1);
+
+    await createSittingDrafter(deps(db, fake)).run(
+      { abortSignal: undefined },
+      idleWake(),
+    );
+
+    expect(fake.calls).toHaveLength(0);
+    expect(db.sittings([1])[0]?.boundaryText).toBe("notes.md");
+    expect(db.lines([1])[0]?.text).toBe("notes.md");
+  });
+
   it("drafts the open sitting's line with the utility model", async () => {
     const db = memoryDb();
     const fake = fakeHost({}, basicEntries);

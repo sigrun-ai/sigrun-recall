@@ -8,10 +8,10 @@ import { RecallDb, type DocRow, type ItemRow } from "../src/db.js";
 import {
   applyRecall,
   injectionReadable,
-  messageKey,
   renderBlock,
   type InjectDeps,
 } from "../src/inject.js";
+import { messageKey } from "../src/message-key.js";
 import type { InContextRule } from "../src/sittings/lineage.js";
 import type { Hit, Searcher } from "../src/search.js";
 
@@ -190,6 +190,33 @@ describe("automatic recall", () => {
     await applyRecall([message], { ...deps, read: async () => ({ items: [entry] }) });
 
     expect(search).toHaveBeenCalledWith("ranges.csv results.pdf", expect.anything(), 5);
+    db.close();
+  });
+
+  it("appends the conversation name after the attachment names for an attachments-only entry", async () => {
+    const message = user("", AT);
+    const entry = {
+      id: 11,
+      conversationId: 1,
+      kind: "sigrun.user",
+      model: [message],
+      data: {
+        attachments: [{
+          path: "notes.md",
+          name: "notes.md",
+          mime: "text/markdown",
+          bytes: 100,
+          delivery: "inline",
+          parts: [0],
+        }],
+      },
+    } as unknown as EntryRecord;
+    const { db, deps, search } = setup();
+    deps.meta = { ...deps.meta, name: "Notes review" };
+
+    await applyRecall([message], { ...deps, read: async () => ({ items: [entry] }) });
+
+    expect(search).toHaveBeenCalledWith("notes.md Notes review", expect.anything(), 5);
     db.close();
   });
 

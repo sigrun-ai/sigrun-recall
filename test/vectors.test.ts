@@ -272,6 +272,28 @@ describe("vectors", () => {
     db.close();
   });
 
+  it("an empty-token query never calls the embedder — the vector arm is skipped", async () => {
+    // A11 recall pin: a query with no searchable tokens must not reach
+    // `embed` at all (previously the arm could be built for it).
+    const db = RecallDb.open(":memory:");
+    const embeddings = fakeEmbeddings(oneVector);
+    const index = createSqliteVectorIndex(db, MODEL);
+    const searcher = createSearcher({
+      db,
+      meta: async () => meta(),
+      entry: async () => entry("clinic"),
+      isLocal: () => true,
+      vectors: async () => createVectorArm(embeddings, index, MODEL, 800),
+      now: () => 1_700_000_000_000,
+    });
+    try {
+      expect(await searcher.search("   ", context(), 10)).toEqual([]);
+      expect(embeddings.embed).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
   it("a pending local-only doc is not embedded by a non-local model", async () => {
     const db = RecallDb.open(":memory:");
     db.upsertDoc(

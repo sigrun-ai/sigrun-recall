@@ -1,4 +1,5 @@
 import { isUserInput, typedText } from "@sigrun/shared/turns";
+import { entryQueryText } from "./entries.js";
 import { fallbackLine, TOC_BUDGET_BYTES, tocBytes, tocSnapshot } from "./toc.js";
 export const LINE_PROMPT = "Summarize this part of a conversation in one line of at most 20 words: what was asked and what was concluded. Reply with the line only.";
 export const MONTH_PROMPT = "Merge these one-line summaries into one line of at most 30 words. Reply with the line only.";
@@ -69,7 +70,7 @@ export function firstSitting(conversationId, entry) {
         startAt: entry.model?.[0]?.timestamp ?? 0,
         boundary: false,
         boundaryText: isUserInput(entry)
-            ? typedText(entry, " ")
+            ? entryQueryText(entry)
             : messageText(entry.model?.[0]),
         previous: null,
         block: null,

@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Attachments-only user messages (typed `""`, e.g. a single `notes.md`)
+  now drive the sitting-boundary query and `boundaryText` from their
+  attachment names — previously the boundary query was empty apart from
+  the conversation name, recall returned nothing useful, and the sitting
+  was titled/stored with an empty boundary text. The shared
+  `entryQueryText` helper (typed text, trimmed, else space-joined
+  attachment names) is now used at the auto-recall, boundary-search,
+  boundary-text, and first-sitting sites; the sitting-prompt sites keep
+  their typed-text-only form.
+- The inject ↔ sittings/request module cycle is gone: `messageKey` lives
+  in `src/message-key.ts` and `findUserEntry` in `src/sittings/entries.ts`,
+  so the two no longer import each other (a TDZ trap for future consts).
+- The query-path embedding budget rises from 800 ms to 2000 ms: the cold
+  first call measured 1.4 s from the cluster (2026-11-16) against warm
+  0.2–0.6 s, so every run start after idle aborted its embed call
+  ("recall: embeddings failed; aborted by the caller") and that turn's
+  auto-recall was lexical-only.
+- Regression pins (A11): an empty-token query never reaches the embedder
+  (the vector arm is skipped), and the all-tokens-dropped FTS test now
+  asserts `searchTrigram` is not called as well as `searchPorter`.
+
 ## [0.6.3] - 2026-11-15
 
 - The @sigrun/shared peer gains the 0.20.2 line (companion to

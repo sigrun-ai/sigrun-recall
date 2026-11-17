@@ -68,8 +68,12 @@ async function migrateLocalProviders(host) {
     }
 }
 export { RecallIndexInput, RecallIndexOutput, RecallRemoveInput, RecallRemoveOutput, RecallSearchInput, RecallSearchOutput, } from "./hooks.js";
-/** The query path's own budget: one short call, or the lexical results. */
-const QUERY_TIMEOUT_MS = 800;
+/** The query path's own budget: one short call, or the lexical results.
+ *  2000 ms: the cold first call measured 1.4 s from the cluster
+ *  (2026-11-16), warm 0.2–0.6 s — the old 800 ms aborted every run start
+ *  after idle, logging "recall: embeddings failed; aborted by the caller"
+ *  and leaving that turn's auto-recall lexical-only. */
+const QUERY_TIMEOUT_MS = 2000;
 /**
  * The loader injects the host only when factory.length > 0: keep the host
  * bare and the optional test dependencies second, so the arity stays one.
