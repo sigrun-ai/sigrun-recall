@@ -22,7 +22,7 @@ Recall embeds through sigrun's core embedding registry (`host.embeddings`), so m
 - **Credential.** The default OpenAI model (`openai/text-embedding-3-small`) needs the `openai` credential in `auth.json`, or `OPENAI_API_KEY` in the sigrun environment/page.
 - **Switching models.** Vectors are keyed by model, so a switch never loses the old index: the sweep re-embeds into the new model in the background while queries keep using the previous model's vectors, and the old rows are dropped only once the new model covers every item. Queries use the newest model whose coverage is complete, falling back to the current default.
 - **Local-only items** are submitted with `confidentiality: "local-only"`; a model core does not trust for local material leaves them lexical (no vector, still text-searchable).
-- **Failures** never break search: a missing model, an unconfigured credential or a timeout degrades that call to lexical results. The query path budgets 800 ms per call.
+- **Failures** never break search: a missing model, an unconfigured credential or a timeout degrades that call to lexical results. The query path budgets 2000 ms per call.
 
 ### Migrating from recall's own `embedding` block
 
