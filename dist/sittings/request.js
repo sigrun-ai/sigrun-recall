@@ -30,7 +30,6 @@ export function currentBoundary(sittings, lineage) {
     }
     return best;
 }
-export { findUserEntry } from "./entries.js";
 /**
  * The earliest user input entry, for the first non-boundary sitting row.
  */

@@ -19,10 +19,10 @@ import createRecall from "../src/index.js";
 import type { Hit, Searcher } from "../src/search.js";
 import {
 	applySittings,
-	findUserEntry,
 	SITTING_HEADER,
 	type SittingRequestDeps,
 } from "../src/sittings/request.js";
+import { findUserEntry } from "../src/sittings/entries.js";
 import { applyRecall } from "../src/inject.js";
 import { createLineageMemo, type EntriesReader } from "../src/sittings/lineage.js";
 import { withDeclaredSettings } from "./fake-host.js";

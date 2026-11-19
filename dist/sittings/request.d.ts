@@ -38,7 +38,6 @@ export interface SittingRequestDeps {
  * material stays in context (no boundary in the rule).
  */
 export declare function currentBoundary(sittings: readonly SittingRow[], lineage: readonly LineageLink[]): SittingRow | undefined;
-export { findUserEntry } from "./entries.js";
 /**
  * Draw sittings boundaries and assemble the request: earlier sittings are
  * summarized in a stored block on the boundary message, and pre-boundary
