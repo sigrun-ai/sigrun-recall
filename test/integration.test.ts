@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi, ToolExecutionResult, ToolHookCall } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
