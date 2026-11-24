@@ -3,9 +3,8 @@
 # drift across the 10 repos. needs-core: true (file:-linked dev
 # deps; core and the family siblings are checked out beside this repo
 # first).
-# core-ref: main during a joint train (C1): this lane's changes need the
-# pi-durable 1.6.0 that is on core main but not yet published. Flip back to
-# release once core 0.22.0 is live on the registry.
+# core-ref: release tests against the latest released core; the lane's
+# changes need only published core (floors >=0.20.0 / >=0.19.1).
 name: ci
 
 on:
@@ -21,7 +20,4 @@ jobs:
     uses: sigrun-ai/sigrun/.github/workflows/ext-ci.yml@main
     with:
       needs-core: true
-      # C1 train-time flip: test against core main, which carries the
-      # pi-durable 1.6.0 this lane needs. Flip back to release once
-      # core 0.22.0 is live on the registry.
-      core-ref: main
+      core-ref: release
